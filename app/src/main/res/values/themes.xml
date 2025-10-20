@@ -1,0 +1,19 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Base application theme. -->
+    <style name="Base.Theme.NetSpeedv3" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+
+        <!-- Status bar customization -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item> <!-- false = light icons -->
+
+        <!-- Navigation bar customization -->
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowLightNavigationBar">true</item> <!-- true = dark icons -->
+
+    </style>
+
+    <style name="Theme.NetSpeedv3" parent="Base.Theme.NetSpeedv3" />
+</resources>
