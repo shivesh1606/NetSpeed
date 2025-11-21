@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+
+    <!-- Existing colors -->
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- App Theme Colors -->
+    <color name="primaryBlue">#1976D2</color>     <!-- Start button blue -->
+    <color name="primaryRed">#D32F2F</color>      <!-- Stop button red -->
+    <color name="textGreen">#2E7D32</color>       <!-- Speed text -->
+    <color name="navItemActive">#1976D2</color>   <!-- Bottom Nav active -->
+    <color name="navItemInactive">#757575</color> <!-- Bottom Nav inactive -->
+
 </resources>

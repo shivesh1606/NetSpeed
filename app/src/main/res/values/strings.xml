@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">NetSpeedv3</string>
+    <string name="start_notification">Start Notification</string>
+    <string name="stop_notification">Stop Notification</string>
+    <string name="speed_format">⬇ %.2f Mbps | ⬆ %.2f Mbps</string>
+
 </resources>
