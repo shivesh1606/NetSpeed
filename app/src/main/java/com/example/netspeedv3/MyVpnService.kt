@@ -14,6 +14,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import kotlin.experimental.xor
 
 @SuppressLint("VpnServicePolicy")
 class MyVpnService : VpnService() {
@@ -25,6 +26,22 @@ class MyVpnService : VpnService() {
     companion object {
         const val ACTION_STOP = "STOP_VPN"
     }
+        object Encryption {
+            private const val key: Byte = 'K'.code.toByte() // same key as server
+
+            fun encrypt(data: ByteArray, length: Int): ByteArray {
+                val result = ByteArray(length)
+                for (i in 0 until length) {
+                    result[i] = data[i] xor key
+                }
+                return result
+            }
+
+            fun decrypt(data: ByteArray, length: Int): ByteArray {
+                // XOR is symmetric
+                return encrypt(data, length)
+            }
+        }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
@@ -80,6 +97,7 @@ class MyVpnService : VpnService() {
             builder.addAddress("10.8.0.2", 24)
             builder.addDnsServer("8.8.8.8")
             builder.addRoute("0.0.0.0", 0) // Capture all traffic
+            builder.setMtu(1200)
 
             tunInterface = builder.establish()
             if (tunInterface == null) {
@@ -113,14 +131,18 @@ class MyVpnService : VpnService() {
 
         try {
             while (running) {
+                // Read from TUN -> encrypt -> send UDP
                 val len = tunIn.read(buffer)
                 if (len > 0) {
-                    socket.send(DatagramPacket(buffer, len, server))
+                    val encrypted = Encryption.encrypt(buffer, len)
+                    socket.send(DatagramPacket(encrypted, encrypted.size, server))
                 }
 
+                // Receive UDP -> decrypt -> write to TUN
                 try {
-                    socket.receive(recvPacket)
-                    tunOut.write(buffer, 0, recvPacket.length)
+                    val n = socket.receive(recvPacket)
+                    val decrypted = Encryption.decrypt(recvPacket.data, recvPacket.length)
+                    tunOut.write(decrypted, 0, decrypted.size)
                 } catch (_: SocketTimeoutException) {}
             }
         } catch (e: Exception) {
