@@ -21,7 +21,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
     private lateinit var disconnectBtn: Button
     private lateinit var serverIpInput: EditText
     private lateinit var statusTextView: TextView
-
+    private  lateinit var clientIpInput: EditText
     private val vpnStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val msg = intent?.getStringExtra("msg") ?: return
@@ -41,6 +41,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         disconnectBtn = view.findViewById(R.id.btn_disconnect_vpn)
         serverIpInput = view.findViewById(R.id.et_server_ip)
         statusTextView = view.findViewById(R.id.tv_vpn_status)
+        clientIpInput = view.findViewById(R.id.et_client_ip)
 
         connectBtn.setOnClickListener { requestVpnPermission() }
         disconnectBtn.setOnClickListener { stopVpn() }
@@ -62,10 +63,13 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun requestVpnPermission() {
         val serverIp = serverIpInput.text.toString().trim()
+        val clientTunIp= clientIpInput.text.toString().trim()
         if (serverIp.isEmpty()) {
             Toast.makeText(requireContext(), "Enter server IP", Toast.LENGTH_SHORT).show()
             return
         }
+//        if(clientTunIp.isEmpty()){
+//            Toast.makeText(requireContext(), "Enter client Tun IP", Toast.LENGTH_SHORT).show()}
 
         val intent = VpnService.prepare(requireContext())
         if (intent != null) vpnPermissionLauncher.launch(intent)
@@ -74,8 +78,11 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun startVpn() {
         val serverIp = serverIpInput.text.toString().trim()
+        val clientTunIp = clientIpInput.text.toString().trim()
+
         val intent = Intent(requireContext(), MyVpnService::class.java)
         intent.putExtra("server_ip", serverIp)
+        intent.putExtra("client_tun_ip", clientTunIp)
         requireContext().startService(intent)
 
         statusTextView.text = "VPN Connecting…"

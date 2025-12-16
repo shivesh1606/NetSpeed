@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
@@ -16,14 +16,24 @@
             android:layout_height="wrap_content"
             android:hint="Enter VPN Server IP"
             android:inputType="text"
-            android:padding="12dp"/>
+            android:padding="12dp" />
+
+        <EditText
+            android:id="@+id/et_client_ip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Enter TUN IP"
+            android:inputType="text"
+            android:padding="12dp" />
+
+
         <TextView
             android:id="@+id/tv_vpn_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:padding="8dp"
             android:text="VPN Disconnected"
-            android:textSize="16sp"
-            android:padding="8dp"/>
+            android:textSize="16sp" />
 
         <Button
             android:id="@+id/btn_connect_vpn"
@@ -36,8 +46,8 @@
             android:id="@+id/btn_disconnect_vpn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Disconnect"
-            android:layout_marginTop="12dp"/>
+            android:layout_marginTop="12dp"
+            android:text="Disconnect" />
 
     </LinearLayout>
 
