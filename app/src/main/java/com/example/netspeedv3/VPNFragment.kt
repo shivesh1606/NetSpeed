@@ -41,7 +41,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         disconnectBtn = view.findViewById(R.id.btn_disconnect_vpn)
         serverIpInput = view.findViewById(R.id.et_server_ip)
         statusTextView = view.findViewById(R.id.tv_vpn_status)
-        clientIpInput = view.findViewById(R.id.et_client_ip)
+//        clientIpInput = view.findViewById(R.id.et_client_ip)
 
         connectBtn.setOnClickListener { requestVpnPermission() }
         disconnectBtn.setOnClickListener { stopVpn() }
@@ -63,7 +63,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun requestVpnPermission() {
         val serverIp = serverIpInput.text.toString().trim()
-        val clientTunIp= clientIpInput.text.toString().trim()
+//        val clientTunIp= clientIpInput.text.toString().trim()
         if (serverIp.isEmpty()) {
             Toast.makeText(requireContext(), "Enter server IP", Toast.LENGTH_SHORT).show()
             return
@@ -78,14 +78,14 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun startVpn() {
         val serverIp = serverIpInput.text.toString().trim()
-        val clientTunIp = clientIpInput.text.toString().trim()
+//        val clientTunIp = clientIpInput.text.toString().trim()
 
         val intent = Intent(requireContext(), MyVpnService::class.java)
         intent.putExtra("server_ip", serverIp)
-        intent.putExtra("client_tun_ip", clientTunIp)
+//        intent.putExtra("client_tun_ip", clientTunIp)
         requireContext().startService(intent)
 
-        statusTextView.text = "VPN Connecting…"
+        statusTextView.text = "VPN Connected…"
         updateButtons(isVpnRunning = true)
     }
 
