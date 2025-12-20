@@ -58,6 +58,25 @@ data class PacketHeader(
         }
     }
 }
+private const val P: Long = 127
+private const val G: Long = 9
+
+private fun modExp(base: Long, exp: Long, mod: Long): Long {
+    var result = 1L
+    var b = base % mod
+    var e = exp
+    while (e > 0) {
+        if ((e and 1L) == 1L) result = (result * b) % mod
+        b = (b * b) % mod
+        e = e shr 1
+    }
+    return result
+}
+
+private fun xorKeyFromSecret(secret: Long): Byte {
+    val s = secret.toInt()
+    return ((s xor (s shr 8) xor (s shr 16) xor (s shr 24)) and 0xFF).toByte()
+}
 
 /* ============================================================
  *  VPN SERVICE
@@ -189,13 +208,24 @@ class MyVpnService : VpnService() {
     ): String {
 
         val magic = (System.currentTimeMillis() and 0xffffffffL).toInt()
-        val hello = ByteArray(9)
+        val hello = ByteArray(13)
+        val privateA = (1000..5000).random().toLong()
+        val yc = modExp(G, privateA, P).toInt()
 
         PacketHeader(PKT_HELLO, 0).toByteArray().copyInto(hello, 0)
-        hello[5] = (magic shr 24).toByte()
-        hello[6] = (magic shr 16).toByte()
-        hello[7] = (magic shr 8).toByte()
-        hello[8] = magic.toByte()
+
+        // client_magic
+                hello[5] = (magic shr 24).toByte()
+                hello[6] = (magic shr 16).toByte()
+                hello[7] = (magic shr 8).toByte()
+                hello[8] = magic.toByte()
+
+        // yc (client public DH)
+                hello[9]  = (yc shr 24).toByte()
+                hello[10] = (yc shr 16).toByte()
+                hello[11] = (yc shr 8).toByte()
+                hello[12] = yc.toByte()
+
 
         socket.send(DatagramPacket(hello, hello.size, server))
         Log.i(TAG, "HELLO sent")
@@ -209,13 +239,21 @@ class MyVpnService : VpnService() {
                     ((recvPacket.data[6].toInt() and 0xFF) shl 16) or
                     ((recvPacket.data[7].toInt() and 0xFF) shl 8) or
                     (recvPacket.data[8].toInt() and 0xFF)
+        val ys =
+            ((recvPacket.data[9].toInt() and 0xFF) shl 24) or
+                    ((recvPacket.data[10].toInt() and 0xFF) shl 16) or
+                    ((recvPacket.data[11].toInt() and 0xFF) shl 8) or
+                    (recvPacket.data[12].toInt() and 0xFF)
+        val sharedSecret = modExp(ys.toLong(), privateA, P)
+        Encryption.key = xorKeyFromSecret(sharedSecret)
+
+        Log.i(TAG, "Derived XOR key = ${Encryption.key.toUByte()}")
 
         val ipStr = intToIp(ip)
         Log.i(TAG, "Assigned VPN IP = $ipStr")
 
         val ack = ByteArray(6)
         PacketHeader(PKT_CLIENT_ACK, 0).toByteArray().copyInto(ack, 0)
-        ack[5] = Encryption.key
         socket.send(DatagramPacket(ack, ack.size, server))
 
         Log.i(TAG, "CLIENT_ACK sent")
