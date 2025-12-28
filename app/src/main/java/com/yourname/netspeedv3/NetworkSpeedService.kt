@@ -1,4 +1,4 @@
-package com.example.netspeedv3
+package com.yourname.netspeedv3
 
 import android.app.*
 import android.content.Context

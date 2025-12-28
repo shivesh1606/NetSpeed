@@ -1,4 +1,4 @@
-package com.example.netspeedv3
+package com.yourname.netspeedv3
 
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
@@ -117,6 +117,14 @@ class MyVpnService : VpnService() {
                 disconnectVpn()
                 return START_NOT_STICKY
             }
+        }
+
+        // Check if user is authenticated before starting VPN service
+        val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+        if (auth.currentUser == null) {
+            sendToast("Authentication required. Please sign in first.")
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         serverIp = intent?.getStringExtra("server_ip") ?: ""

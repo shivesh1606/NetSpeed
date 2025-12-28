@@ -30,7 +30,7 @@
 
         <!-- Main Screen -->
         <activity
-            android:name=".MainActivity"
+            android:name="com.yourname.netspeedv3.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
@@ -40,13 +40,13 @@
 
         <!-- Network Speed Foreground Service -->
         <service
-            android:name=".NetworkSpeedService"
+            android:name="com.yourname.netspeedv3.NetworkSpeedService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <!-- VPN Service -->
         <service
-            android:name=".MyVpnService"
+            android:name="com.yourname.netspeedv3.MyVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
             android:foregroundServiceType="specialUse"

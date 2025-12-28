@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "87840598024",
+    "project_id": "netspeed-f0953",
+    "storage_bucket": "netspeed-f0953.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:87840598024:android:3b184a4e31ca08453bc9bd",
+        "android_client_info": {
+          "package_name": "com.yourname.netspeedv3"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "87840598024-80aep3gg34csppisg4blod615fdikakm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAqtnhIghVr9W_X8-mBHNvp_fWzZMyzy5E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "87840598024-80aep3gg34csppisg4blod615fdikakm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -3,5 +3,6 @@
     <string name="start_notification">Start Notification</string>
     <string name="stop_notification">Stop Notification</string>
     <string name="speed_format">⬇ %.2f Mbps | ⬆ %.2f Mbps</string>
-
+    <!-- Replace with your actual web client ID from Firebase Console -->
+    <string name="default_web_client_id">87840598024-80aep3gg34csppisg4blod615fdikakm.apps.googleusercontent.com</string>
 </resources>

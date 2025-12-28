@@ -1,4 +1,4 @@
-package com.example.netspeedv3
+package com.yourname.netspeedv3
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -46,6 +46,17 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         connectBtn.setOnClickListener { requestVpnPermission() }
         disconnectBtn.setOnClickListener { stopVpn() }
 
+        // Check authentication status and update UI accordingly
+        val activity = requireActivity() as MainActivity
+        val googleAuthManager = activity.getGoogleAuthManager()
+        
+        if (!googleAuthManager.isSignedIn()) {
+            connectBtn.isEnabled = false
+            statusTextView.text = "VPN service requires authentication. Please sign in first."
+        } else {
+            connectBtn.isEnabled = true
+        }
+        
         updateButtons(isVpnRunning = false)
     }
 
@@ -53,6 +64,23 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         super.onResume()
         LocalBroadcastManager.getInstance(requireContext())
             .registerReceiver(vpnStatusReceiver, IntentFilter("vpn_toast"))
+            
+        // Update UI based on authentication status when fragment resumes
+        val activity = requireActivity() as MainActivity
+        val googleAuthManager = activity.getGoogleAuthManager()
+        
+        if (::connectBtn.isInitialized) {
+            if (!googleAuthManager.isSignedIn()) {
+                connectBtn.isEnabled = false
+                statusTextView.text = "VPN service requires authentication. Please sign in first."
+            } else {
+                connectBtn.isEnabled = true
+                // If user was previously disconnected, reset status text
+                if (statusTextView.text.contains("requires authentication")) {
+                    statusTextView.text = "VPN Disconnected"
+                }
+            }
+        }
     }
 
     override fun onPause() {
@@ -62,6 +90,17 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
     }
 
     private fun requestVpnPermission() {
+        // Check if user is authenticated before allowing VPN connection
+        val activity = requireActivity() as MainActivity
+        val googleAuthManager = activity.getGoogleAuthManager()
+        
+        if (!googleAuthManager.isSignedIn()) {
+            Toast.makeText(requireContext(), "Please sign in to use VPN service", Toast.LENGTH_LONG).show()
+            // Optionally redirect to sign in
+            // For now, just return without starting VPN
+            return
+        }
+        
         val serverIp = serverIpInput.text.toString().trim()
 //        val clientTunIp= clientIpInput.text.toString().trim()
         if (serverIp.isEmpty()) {
@@ -100,12 +139,20 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun updateButtons(msg: String) {
         val running = msg.contains("Connected") || msg.contains("Connecting")
-        connectBtn.isEnabled = !running
+        val activity = requireActivity() as MainActivity
+        val googleAuthManager = activity.getGoogleAuthManager()
+        
+        // Only enable connect button if user is signed in AND VPN is not running
+        connectBtn.isEnabled = googleAuthManager.isSignedIn() && !running
         disconnectBtn.isEnabled = running
     }
 
     private fun updateButtons(isVpnRunning: Boolean) {
-        connectBtn.isEnabled = !isVpnRunning
+        val activity = requireActivity() as MainActivity
+        val googleAuthManager = activity.getGoogleAuthManager()
+        
+        // Only enable connect button if user is signed in AND VPN is not running
+        connectBtn.isEnabled = googleAuthManager.isSignedIn() && !isVpnRunning
         disconnectBtn.isEnabled = isVpnRunning
     }
 }
