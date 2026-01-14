@@ -28,7 +28,7 @@ private const val PKT_DATA: Byte = 4
 
 private const val HEADER_SIZE = 5
 private const val SERVER_PORT = 5555
-private const val DEFAULT_MTU = 1200
+private const val DEFAULT_MTU = 1320
 
 /* ============================================================
  *  PACKET HEADER (5 BYTES, PACKED)
@@ -48,12 +48,13 @@ data class PacketHeader(
 
     companion object {
         fun fromByteArray(buf: ByteArray): PacketHeader {
-            val sid =
-                ((buf[1].toInt() and 0xFF) shl 24) or
-                        ((buf[2].toInt() and 0xFF) shl 16) or
-                        ((buf[3].toInt() and 0xFF) shl 8) or
-                        (buf[4].toInt() and 0xFF)
-
+            // Use .toLong() and mask with 0xFFFFFFFFL to treat as unsigned
+            val sid = (
+                    ((buf[1].toInt() and 0xFF) shl 24) or
+                            ((buf[2].toInt() and 0xFF) shl 16) or
+                            ((buf[3].toInt() and 0xFF) shl 8) or
+                            (buf[4].toInt() and 0xFF)
+                    )
             return PacketHeader(buf[0], sid)
         }
     }
@@ -91,7 +92,7 @@ class MyVpnService : VpnService() {
 
     @Volatile
     private var running = false
-
+    private var currentSessionId: Int = 0 // Store this globally in the class
     private var tunInterface: ParcelFileDescriptor? = null
     private var serverIp: String = ""
 
@@ -101,10 +102,11 @@ class MyVpnService : VpnService() {
     object Encryption {
         var key: Byte = 'K'.code.toByte()
 
-        fun crypt(data: ByteArray, len: Int): ByteArray {
-            val out = ByteArray(len)
-            for (i in 0 until len) out[i] = data[i] xor key
-            return out
+        // Pass the buffer and offset to avoid creating new objects
+        fun cryptInPlace(data: ByteArray, offset: Int, len: Int) {
+            for (i in offset until (offset + len)) {
+                data[i] = data[i] xor key
+            }
         }
     }
 
@@ -129,7 +131,10 @@ class MyVpnService : VpnService() {
         startForegroundNotification()
 
         if (!running) {
-            Thread { vpnMainLoop() }.start()
+            Thread {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+                vpnMainLoop()
+            }.start()
         }
 
         return START_STICKY
@@ -141,14 +146,16 @@ class MyVpnService : VpnService() {
     private fun vpnMainLoop() {
         Log.i(TAG, "VPN loop started")
 
-        val socket = DatagramSocket()
+        var socket = DatagramSocket()
         socket.soTimeout = 2000
         protect(socket)
 
         val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
-        val buffer = ByteArray(32767)
-        val recvPacket = DatagramPacket(buffer, buffer.size)
-
+        // Create a buffer large enough for MTU + Header
+        // Using 1600 to be safe
+        val sendBuffer = ByteArray(1600)
+        val recvBuffer = ByteArray(1600)
+        val recvPacket = DatagramPacket(recvBuffer, recvBuffer.size)
         try {
             val assignedIp = performHandshake(socket, serverAddr, recvPacket)
             createTun(assignedIp)
@@ -158,20 +165,37 @@ class MyVpnService : VpnService() {
             val tunOut = FileOutputStream(fd)
 
             running = true
-            socket.soTimeout = 200
-
+            socket.soTimeout = 1
+            socket.sendBufferSize = 1024 * 1024 // 1MB buffer
+            socket.receiveBufferSize = 1024 * 1024
             while (running) {
+                var hasData = false
                 /* ---- TUN → UDP ---- */
-                val len = tunIn.read(buffer)
+                // 1. Read from TUN directly into the buffer AFTER the 5-byte header space
+                val len = tunIn.read(sendBuffer, HEADER_SIZE, DEFAULT_MTU)
                 if (len > 0) {
-                    val header = PacketHeader(PKT_DATA, 0).toByteArray()
-                    val encrypted = Encryption.crypt(buffer, len)
 
-                    val out = ByteArray(header.size + encrypted.size)
-                    System.arraycopy(header, 0, out, 0, header.size)
-                    System.arraycopy(encrypted, 0, out, header.size, encrypted.size)
+                    // 2. Generate and write header into the first 5 bytes (0..4)
+                    val headerBytes = PacketHeader(PKT_DATA, currentSessionId).toByteArray()
+                    System.arraycopy(headerBytes, 0, sendBuffer, 0, HEADER_SIZE)
 
-                    socket.send(DatagramPacket(out, out.size, serverAddr))
+                    // 3. Encrypt the payload starting from index 5
+                    Encryption.cryptInPlace(sendBuffer, HEADER_SIZE, len)
+
+                    // 4. Send the whole thing (Header + Encrypted Payload)
+                    /* ---- TUN → UDP ---- */
+// ... (read and encrypt logic) ...
+                    try {
+                        socket.send(DatagramPacket(sendBuffer, HEADER_SIZE + len, serverAddr))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Send failed, recreating socket: ${e.message}")
+                        try { socket.close() } catch (_: Exception) {}
+
+                        socket = DatagramSocket()
+                        protect(socket)
+                        socket.soTimeout = 200 // <--- CRITICAL: Add this or receive() will freeze the app
+                    }
+
                 }
 
                 /* ---- UDP → TUN ---- */
@@ -180,14 +204,24 @@ class MyVpnService : VpnService() {
                     val totalLen = recvPacket.length
                     if (totalLen < HEADER_SIZE) continue
 
-                    val hdr = PacketHeader.fromByteArray(buffer)
+                    // 1. Parse header from the start of recvBuffer
+                    val hdr = PacketHeader.fromByteArray(recvBuffer)
                     if (hdr.type != PKT_DATA) continue
-
+                    // Ensure we update our local ID if the server ever sends a new one
+                    currentSessionId = hdr.sessionId
                     val payloadLen = totalLen - HEADER_SIZE
-                    val payload = Encryption.crypt(buffer.copyOfRange(5, 5 + payloadLen), payloadLen)
-                    tunOut.write(payload)
+                    // 2. Decrypt the payload in-place starting at index 5
+                    Encryption.cryptInPlace(recvBuffer, HEADER_SIZE, payloadLen)
+                    // 3. Write decrypted data to TUN
+                    tunOut.write(recvBuffer, HEADER_SIZE, payloadLen)
 
-                } catch (_: SocketTimeoutException) {}
+                } catch (e: SocketTimeoutException) {
+                    // Ignore timeout
+                } catch (e: Exception) {
+                // We don't need to recreate the socket here because
+                // the TUN -> UDP block above will catch the error and do it.
+                Log.w(TAG, "Receive failed (waiting for recovery): ${e.message}")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "VPN error", e)
@@ -233,7 +267,9 @@ class MyVpnService : VpnService() {
         socket.receive(recvPacket)
         val hdr = PacketHeader.fromByteArray(recvPacket.data)
         require(hdr.type == PKT_WELCOME) { "Expected WELCOME" }
-
+// Save the session ID globally
+        this.currentSessionId = hdr.sessionId
+        Log.i(TAG, "Handshake successful. Registered Session ID:${currentSessionId.toUInt()}")
         val ip =
             ((recvPacket.data[5].toInt() and 0xFF) shl 24) or
                     ((recvPacket.data[6].toInt() and 0xFF) shl 16) or
@@ -252,11 +288,10 @@ class MyVpnService : VpnService() {
         val ipStr = intToIp(ip)
         Log.i(TAG, "Assigned VPN IP = $ipStr")
 
-        val ack = ByteArray(6)
-        PacketHeader(PKT_CLIENT_ACK, 0).toByteArray().copyInto(ack, 0)
+// Inside performHandshake, after getting WELCOME:
+        val ack = PacketHeader(PKT_CLIENT_ACK, currentSessionId).toByteArray()
         socket.send(DatagramPacket(ack, ack.size, server))
-
-        Log.i(TAG, "CLIENT_ACK sent")
+        Log.i(TAG, "CLIENT_ACK sent with Session ID: ${currentSessionId.toUInt()}")
         return ipStr
     }
 
