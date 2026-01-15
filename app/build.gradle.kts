@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.netspeedv3"
+    namespace = "org.thinkSlow.netspeedv3"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.netspeedv3"
+        applicationId = "org.thinkSlow.netspeedv3"
         minSdk = 24
         targetSdk = 36
         versionCode = 1 // increment with each release
