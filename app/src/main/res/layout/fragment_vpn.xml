@@ -18,22 +18,54 @@
             android:inputType="text"
             android:padding="12dp" />
 
-<!--        <EditText-->
-<!--            android:id="@+id/et_client_ip"-->
-<!--            android:layout_width="match_parent"-->
-<!--            android:layout_height="wrap_content"-->
-<!--            android:hint="Enter TUN IP"-->
-<!--            android:inputType="text"-->
-<!--            android:padding="12dp" />-->
-
-
         <TextView
             android:id="@+id/tv_vpn_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:padding="8dp"
             android:text="VPN Disconnected"
-            android:textSize="16sp" />
+            android:textSize="16sp"
+            android:gravity="center" />
+
+        <LinearLayout
+            android:id="@+id/ll_info_panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#EEEEEE"
+            android:padding="16dp"
+            android:layout_marginTop="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Session Information"
+                android:textStyle="bold"
+                android:textSize="14sp"
+                android:textColor="#333333"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#CCCCCC"
+                android:layout_marginVertical="8dp"/>
+
+            <GridLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:columnCount="2">
+
+                <TextView android:text="Assigned IP: " android:textSize="14sp"/>
+                <TextView android:id="@+id/tv_assigned_ip" android:text="0.0.0.0" android:textStyle="bold"/>
+
+                <TextView android:text="Active MTU: " android:textSize="14sp" android:layout_marginTop="8dp"/>
+                <TextView android:id="@+id/tv_active_mss" android:text="1320 (MSS: 1160)" android:textStyle="bold" android:layout_marginTop="8dp"/>
+
+                <TextView android:text="Session ID: " android:textSize="14sp" android:layout_marginTop="8dp"/>
+                <TextView android:id="@+id/tv_session_id" android:text="N/A" android:textStyle="bold" android:layout_marginTop="8dp"/>
+            </GridLayout>
+        </LinearLayout>
 
         <Button
             android:id="@+id/btn_connect_vpn"
@@ -50,5 +82,4 @@
             android:text="Disconnect" />
 
     </LinearLayout>
-
 </androidx.constraintlayout.widget.ConstraintLayout>

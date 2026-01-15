@@ -18,6 +18,8 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import kotlin.experimental.xor
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /* ============================================================
  *  PROTOCOL CONSTANTS (MUST MATCH C++)
@@ -104,87 +106,98 @@ private fun checksum(buf: ByteArray, off: Int, len: Int): Int {
     return sum.inv() and 0xFFFF
 }
 
-private fun recomputeChecksums(pkt: ByteArray, len: Int) {
-    // ---- IP checksum ----
-    pkt[10] = 0
-    pkt[11] = 0
-    val ipChecksum = checksum(pkt, 0, (pkt[0].toInt() and 0x0F) * 4)
-    pkt[10] = (ipChecksum shr 8).toByte()
-    pkt[11] = ipChecksum.toByte()
+/**
+ * Updates a 16-bit ones' complement checksum incrementally.
+ * Follows RFC 1624 logic: HC' = ~(~HC + ~m + m')
+ */
+private fun updateChecksumIncremental(oldChecksum: Int, oldVal: Int, newVal: Int): Int {
+    // 1. Get the sum of the components (~HC + ~m + m')
+    // We use long to handle potential carries beyond 16 bits
+    var sum = (oldChecksum.inv() and 0xFFFF).toLong() +
+            (oldVal.inv() and 0xFFFF).toLong() +
+            (newVal and 0xFFFF).toLong()
 
-    // ---- TCP checksum ----
-    val ihl = (pkt[0].toInt() and 0x0F) * 4
-    pkt[ihl + 16] = 0
-    pkt[ihl + 17] = 0
+    // 2. Fold 32-bit sum into 16 bits (handle carries)
+    while (sum shr 16 != 0L) {
+        sum = (sum and 0xFFFFL) + (sum shr 16)
+    }
 
-    val tcpLen = len - ihl
-    val pseudo = ByteArray(12 + tcpLen)
-
-    // src + dst IP
-    System.arraycopy(pkt, 12, pseudo, 0, 8)
-    pseudo[8] = 0
-    pseudo[9] = IPPROTO_TCP.toByte()
-    pseudo[10] = (tcpLen shr 8).toByte()
-    pseudo[11] = tcpLen.toByte()
-
-    System.arraycopy(pkt, ihl, pseudo, 12, tcpLen)
-    val tcpChecksum = checksum(pseudo, 0, pseudo.size)
-
-    pkt[ihl + 16] = (tcpChecksum shr 8).toByte()
-    pkt[ihl + 17] = tcpChecksum.toByte()
+    // 3. Return the bitwise complement
+    return sum.inv().toInt() and 0xFFFF
 }
 
-private fun clampTcpMssIfNeeded(pkt: ByteArray, len: Int) {
-    if (len < 40) return  // min IPv4 + TCP
+/**
+ * Clamps the TCP MSS value incrementally to avoid packet fragmentation.
+ * Uses the dynamic currentClampMss value which can be updated by PMTUD.
+ * * @param pkt The byte array containing the packet.
+ * @param len The length of the IP packet.
+ * @param pktOffset The offset where the IP header starts in the array.
+ * @param mssLimit The current dynamic MSS limit (pass currentClampMss here).
+ */
+private fun clampTcpMssIncremental(pkt: ByteArray, len: Int, pktOffset: Int, mssLimit: Int) {
+    // Minimum 40 bytes required for IPv4 (20) + TCP (20)
+    if (len < 40) return
 
-    // ---- IP header ----
-    val ihl = (pkt[0].toInt() and 0x0F) * 4
-    if (ihl < 20) return
+    // Parse IP Header Length (IHL) to find TCP start
+    val ihl = (pkt[pktOffset].toInt() and 0x0F) * 4
 
-    val proto = pkt[9].toInt() and 0xFF
+    // Ensure the protocol is TCP (6)
+    val proto = pkt[pktOffset + 9].toInt() and 0xFF
     if (proto != IPPROTO_TCP) return
 
-    // ---- TCP header ----
-    val tcpStart = ihl
+    val tcpStart = pktOffset + ihl
+
+    // MSS Clamping is only relevant for SYN packets (initial handshake)
     val tcpFlags = pkt[tcpStart + 13].toInt() and 0xFF
     if (tcpFlags and TCP_FLAG_SYN == 0) return
 
+    // Parse TCP Header Length
     val tcpHdrLen = ((pkt[tcpStart + 12].toInt() shr 4) and 0xF) * 4
-    if (tcpHdrLen <= 20) return
 
-    // ---- TCP options ----
+    // Iterate through TCP options to find the MSS option (Kind 2)
     var opt = tcpStart + 20
     val optEnd = tcpStart + tcpHdrLen
 
-    while (opt < optEnd) {
+    while (opt + 3 < optEnd) {
         val kind = pkt[opt].toInt() and 0xFF
 
-        when (kind) {
-            TCP_OPTION_END -> return
-            TCP_OPTION_NOP -> opt += 1
-            TCP_OPTION_MSS -> {
-                val mssOffset = opt + 2
-                val oldMss =
-                    ((pkt[mssOffset].toInt() and 0xFF) shl 8) or
-                            (pkt[mssOffset + 1].toInt() and 0xFF)
-
-                if (oldMss > CLAMP_MSS) {
-                    pkt[mssOffset]     = (CLAMP_MSS shr 8).toByte()
-                    pkt[mssOffset + 1] = CLAMP_MSS.toByte()
-                    recomputeChecksums(pkt, len)
-                }
-                return
-            }
-            else -> {
-                val size = pkt[opt + 1].toInt() and 0xFF
-                if (size < 2) return
-                opt += size
-            }
+        // Handle standard options
+        if (kind == TCP_OPTION_END) break
+        if (kind == TCP_OPTION_NOP) {
+            opt++
+            continue
         }
+
+        val size = pkt[opt + 1].toInt() and 0xFF
+
+        // Check for MSS Option (Kind 2, Size 4)
+        if (kind == TCP_OPTION_MSS && size == 4) {
+            val mssOff = opt + 2
+            val oldMss = ((pkt[mssOff].toInt() and 0xFF) shl 8) or (pkt[mssOff + 1].toInt() and 0xFF)
+
+            // Use the dynamic mssLimit updated by handleInboundPacket
+            if (oldMss > mssLimit) {
+                // 1. Update MSS bytes
+                pkt[mssOff] = (mssLimit shr 8).toByte()
+                pkt[mssOff + 1] = mssLimit.toByte()
+
+                // 2. Incrementally update TCP Checksum
+                // TCP Checksum offset is 16 within the TCP header
+                val oldTcpCheck = ((pkt[tcpStart + 16].toInt() and 0xFF) shl 8) or
+                        (pkt[tcpStart + 17].toInt() and 0xFF)
+
+                val newTcpCheck = updateChecksumIncremental(oldTcpCheck, oldMss, mssLimit)
+
+                pkt[tcpStart + 16] = (newTcpCheck shr 8).toByte()
+                pkt[tcpStart + 17] = newTcpCheck.toByte()
+            }
+            return
+        }
+
+        // Move to the next option
+        opt += if (size < 2) 1 else size
     }
 }
-
-
 private fun xorKeyFromSecret(secret: Long): Byte {
     val s = secret.toInt()
     return ((s xor (s shr 8) xor (s shr 16) xor (s shr 24)) and 0xFF).toByte()
@@ -200,13 +213,75 @@ class MyVpnService : VpnService() {
         const val ACTION_STOP = "STOP_VPN"
         private const val TAG = "ThinkSlowVPN"
     }
-
+    private val socketLock = ReentrantLock()
     @Volatile
     private var running = false
-    private var currentSessionId: Int = 0 // Store this globally in the class
+    private var currentSessionId: Int = 0
     private var tunInterface: ParcelFileDescriptor? = null
     private var serverIp: String = ""
+    private var assignedIpStr: String = "0.0.0.0" // Store this for UI updates
+    private var currentClampMss = CLAMP_MSS
+    private var globalSocket: DatagramSocket? = null
 
+
+    // Helper to safely send through the shared socket
+    private fun safeSocketSend(packet: DatagramPacket) {
+        socketLock.withLock {
+            try {
+                globalSocket?.send(packet)
+            } catch (e: Exception) {
+                // If send fails, we might need to handle it,
+                // but the Uplink thread will catch the exception in the loop
+                throw e
+            }
+        }
+    }
+    private fun updateVpnMtu(newMtu: Int) {
+        Log.i(TAG, "PMTUD: Lowering MTU to $newMtu")
+
+        // 1. Update the clamping value (MTU - 40 for IP/TCP - 80 for safety)
+        // We use a safe margin to avoid "re-fragmentation"
+        currentClampMss = newMtu - 120
+
+        // 2. We can't easily change the MTU of an existing TUN interface without re-establishing it.
+        // However, by updating our internal CLAMP_MSS, the TCP connections will naturally shrink
+        // to the new size, effectively solving the problem without a restart.
+        // Use the stored IP string so the UI stays consistent
+        broadcastVpnStatus(assignedIpStr)
+    }
+
+    private fun broadcastVpnStatus(assignedIp: String) {
+        val intent = Intent("vpn_status_update") // Changed from "VPN_UPDATE" to match Fragment
+        intent.putExtra("ip", assignedIp)
+        intent.putExtra("mtu", DEFAULT_MTU)
+        intent.putExtra("mss", currentClampMss)
+        intent.putExtra("sid", currentSessionId.toUInt().toString())
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+    private fun handleInboundPacket(pkt: ByteArray, len: Int, pktOffset: Int) {
+        // 1. Check for IPv4 (0x45) at the correct offset
+        if ((pkt[pktOffset].toInt() and 0xF0) != 0x40) return
+
+        // 2. Check for ICMP (Protocol 1)
+        val proto = pkt[pktOffset + 9].toInt() and 0xFF
+        if (proto == 1) {
+            Log.i(TAG, "PMTUD: Received an ICMP packet inside the tunnel!")
+            val ihl = (pkt[pktOffset].toInt() and 0x0F) * 4
+            val icmpStart = pktOffset + ihl
+            val icmpType = pkt[icmpStart].toInt() and 0xFF
+            val icmpCode = pkt[icmpStart + 1].toInt() and 0xFF
+
+            // Type 3, Code 4 = Fragmentation Needed
+            if (icmpType == 3 && icmpCode == 4) {
+                val nextHopMtu = ((pkt[icmpStart + 6].toInt() and 0xFF) shl 8) or
+                        (pkt[icmpStart + 7].toInt() and 0xFF)
+
+                if (nextHopMtu in 576..DEFAULT_MTU) {
+                    updateVpnMtu(nextHopMtu)
+                }
+            }
+        }
+    }
     /* ============================================================
      *  SIMPLE XOR ENCRYPTION (TEMP)
      * ============================================================ */
@@ -254,94 +329,115 @@ class MyVpnService : VpnService() {
     /* ============================================================
      *  MAIN VPN LOOP
      * ============================================================ */
+    /* ============================================================
+         * MAIN VPN LOOP (MULTI-THREADED FULL-DUPLEX)
+         * ============================================================ */
     private fun vpnMainLoop() {
-        Log.i(TAG, "VPN loop started")
+        Log.i(TAG, "VPN multi-threaded loop starting")
 
-        var socket = DatagramSocket()
-        socket.soTimeout = 2000
+        // Initial socket creation
+        val socket = DatagramSocket()
         protect(socket)
+        globalSocket = socket
 
         val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
-        // Create a buffer large enough for MTU + Header
-        // Using 1600 to be safe
-        val sendBuffer = ByteArray(1600)
-        val recvBuffer = ByteArray(1600)
-        val recvPacket = DatagramPacket(recvBuffer, recvBuffer.size)
+
         try {
-            val assignedIp = performHandshake(socket, serverAddr, recvPacket)
+            val assignedIp = performHandshake(socket, serverAddr, DatagramPacket(ByteArray(1600), 1600))
             createTun(assignedIp)
+            broadcastVpnStatus(assignedIp)
 
             val fd = tunInterface!!.fileDescriptor
             val tunIn = FileInputStream(fd)
             val tunOut = FileOutputStream(fd)
 
-            running = true
-            socket.soTimeout = 1
-            socket.sendBufferSize = 1024 * 1024 // 1MB buffer
+            socket.sendBufferSize = 1024 * 1024
             socket.receiveBufferSize = 1024 * 1024
-            while (running) {
-                var hasData = false
-                /* ---- TUN → UDP ---- */
-                // 1. Read from TUN directly into the buffer AFTER the 5-byte header space
-                val len = tunIn.read(sendBuffer, HEADER_SIZE, DEFAULT_MTU)
-                if (len > 0) {
 
-                    // 2. Generate and write header into the first 5 bytes (0..4)
-                    val headerBytes = PacketHeader(PKT_DATA, currentSessionId).toByteArray()
-                    System.arraycopy(headerBytes, 0, sendBuffer, 0, HEADER_SIZE)
+            running = true
 
-                    // 3. Encrypt the payload starting from index 5
-                    Encryption.cryptInPlace(sendBuffer, HEADER_SIZE, len)
-
-                    // 4. Send the whole thing (Header + Encrypted Payload)
-                    /* ---- TUN → UDP ---- */
-// ... (read and encrypt logic) ...
-                    try {
-                        socket.send(DatagramPacket(sendBuffer, HEADER_SIZE + len, serverAddr))
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Send failed, recreating socket: ${e.message}")
-                        try { socket.close() } catch (_: Exception) {}
-
-                        socket = DatagramSocket()
-                        protect(socket)
-                        socket.soTimeout = 200 // <--- CRITICAL: Add this or receive() will freeze the app
-                    }
-
-                }
-
-                /* ---- UDP → TUN ---- */
+            // --- THREAD 1: UPLINK (TUN -> UDP) ---
+            val uplinkThread = Thread {
+                val sendBuffer = ByteArray(1600)
                 try {
-                    socket.receive(recvPacket)
-                    val totalLen = recvPacket.length
-                    if (totalLen < HEADER_SIZE) continue
+                    while (running) {
+                        val len = tunIn.read(sendBuffer, HEADER_SIZE, DEFAULT_MTU)
+                        if (len > 0) {
+                            clampTcpMssIncremental(sendBuffer, len, HEADER_SIZE, currentClampMss)
 
-                    // 1. Parse header from the start of recvBuffer
-                    val hdr = PacketHeader.fromByteArray(recvBuffer)
-                    if (hdr.type != PKT_DATA) continue
-                    // Ensure we update our local ID if the server ever sends a new one
-                    currentSessionId = hdr.sessionId
-                    val payloadLen = totalLen - HEADER_SIZE
-                    // 2. Decrypt the payload in-place starting at index 5
-                    Encryption.cryptInPlace(recvBuffer, HEADER_SIZE, payloadLen)
-                    // 3. Write decrypted data to TUN
-                    tunOut.write(recvBuffer, HEADER_SIZE, payloadLen)
+                            // Prep Header
+                            sendBuffer[0] = PKT_DATA
+                            sendBuffer[1] = (currentSessionId shr 24).toByte()
+                            sendBuffer[2] = (currentSessionId shr 16).toByte()
+                            sendBuffer[3] = (currentSessionId shr 8).toByte()
+                            sendBuffer[4] = currentSessionId.toByte()
 
-                } catch (e: SocketTimeoutException) {
-                    // Ignore timeout
+                            Encryption.cryptInPlace(sendBuffer, HEADER_SIZE, len)
+
+                            // Use safeSend instead of direct socket.send
+                            val packet = DatagramPacket(sendBuffer, HEADER_SIZE + len, serverAddr)
+
+                            socketLock.withLock {
+                                if (running) globalSocket?.send(packet)
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
-                // We don't need to recreate the socket here because
-                // the TUN -> UDP block above will catch the error and do it.
-                Log.w(TAG, "Receive failed (waiting for recovery): ${e.message}")
+                    if (running) {
+                        Log.e(TAG, "Uplink failure: ${e.message}")
+                        // Here is where you would trigger a "reconnectNeeded" flag
+                    }
                 }
             }
+
+            // --- THREAD 2: DOWNLINK (UDP -> TUN) ---
+            val downlinkThread = Thread {
+                val recvBuffer = ByteArray(1600)
+                try {
+                    while (running) {
+                        // We must receive on the specific socket instance
+                        val recvPacket = DatagramPacket(recvBuffer, recvBuffer.size)
+
+                        // Receive is a blocking call; if the socket is closed
+                        // by the other thread, this will throw an exception
+                        socket.receive(recvPacket)
+
+                        val totalLen = recvPacket.length
+                        if (totalLen < HEADER_SIZE) continue
+
+                        val hdr = PacketHeader.fromByteArray(recvBuffer)
+                        if (hdr.type != PKT_DATA) continue
+
+                        currentSessionId = hdr.sessionId
+                        val payloadLen = totalLen - HEADER_SIZE
+
+                        Encryption.cryptInPlace(recvBuffer, HEADER_SIZE, payloadLen)
+                        handleInboundPacket(recvBuffer, payloadLen, HEADER_SIZE)
+
+                        tunOut.write(recvBuffer, HEADER_SIZE, payloadLen)
+                    }
+                } catch (e: Exception) {
+                    if (running) Log.e(TAG, "Downlink failure: ${e.message}")
+                }
+            }
+
+            uplinkThread.start()
+            downlinkThread.start()
+
+            uplinkThread.join()
+            downlinkThread.join()
+
         } catch (e: Exception) {
-            Log.e(TAG, "VPN error", e)
-            sendToast("VPN Error: ${e.message}")
+            Log.e(TAG, "VPN Main Loop Error", e)
         } finally {
-            socket.close()
+            socketLock.withLock {
+                socket.close()
+                globalSocket = null
+            }
             disconnectVpn()
         }
     }
+
 
     /* ============================================================
      *  HANDSHAKE
@@ -403,6 +499,8 @@ class MyVpnService : VpnService() {
         val ack = PacketHeader(PKT_CLIENT_ACK, currentSessionId).toByteArray()
         socket.send(DatagramPacket(ack, ack.size, server))
         Log.i(TAG, "CLIENT_ACK sent with Session ID: ${currentSessionId.toUInt()}")
+        // Inside performHandshake, right before the return:
+        this.assignedIpStr = ipStr
         return ipStr
     }
 
@@ -440,7 +538,7 @@ class MyVpnService : VpnService() {
         else
             stopForeground(true)
 
-        sendToast("VPN Disconnected")
+        sendToast("VPN Disconnected") // This is the trigger for your UI fix
         stopSelf()
     }
 
