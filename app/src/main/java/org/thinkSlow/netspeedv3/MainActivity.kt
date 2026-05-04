@@ -1,12 +1,14 @@
 package org.thinkSlow.netspeedv3
 
-import org.thinkSlow.netspeedv3.R
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
+import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var nav: BottomNavigationView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -17,7 +19,7 @@ class MainActivity : AppCompatActivity() {
             replaceFragment(SpeedFragment())
         }
 
-        val nav = findViewById<BottomNavigationView>(R.id.bottom_nav)
+        nav = findViewById(R.id.bottom_nav)
 
         nav.setOnItemSelectedListener { item ->
             when (item.itemId) {
@@ -29,10 +31,23 @@ class MainActivity : AppCompatActivity() {
                     replaceFragment(VPNFragment())
                     true
                 }
+                R.id.menu_profile -> {
+                    replaceFragment(ProfileFragment())
+                    true
+                }
                 else -> false
             }
         }
     }
+
+    /** Navigate to the Profile tab programmatically (called from VPNFragment) */
+    fun navigateToProfile() {
+        nav.selectedItemId = R.id.menu_profile
+    }
+
+    /** Check if a Google account is currently signed in */
+    fun isUserSignedIn(): Boolean =
+        GoogleSignIn.getLastSignedInAccount(this) != null
 
     private fun replaceFragment(fragment: Fragment) {
         supportFragmentManager.beginTransaction()

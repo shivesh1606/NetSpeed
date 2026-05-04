@@ -4,4 +4,20 @@
     <string name="stop_notification">Stop Notification</string>
     <string name="speed_format">⬇ %.2f Mbps | ⬆ %.2f Mbps</string>
 
+    <!-- Profile & Auth -->
+    <string name="sign_in_prompt">Sign in to continue</string>
+    <string name="sign_in_subtitle">A Google account is required to use the VPN</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="sign_out">Sign Out</string>
+    <string name="settings_header">Settings</string>
+    <string name="dark_theme">Dark Theme</string>
+    <string name="auto_speed_notif">Auto-start speed notification</string>
+    <string name="vpn_auth_required">Sign in with Google to use the VPN</string>
+    <string name="go_to_sign_in">Go to Profile to Sign In</string>
+    <string name="saved_servers">Saved VPN Servers</string>
+    <string name="add_server_hint">e.g. 192.168.1.100</string>
+    <string name="add">Add</string>
+    <string name="no_saved_servers">No servers saved yet</string>
+    <string name="select_server_hint">Select a saved server</string>
+
 </resources>

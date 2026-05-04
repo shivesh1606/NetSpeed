@@ -8,4 +8,8 @@
         android:id="@+id/menu_vpn"
         android:icon="@drawable/ic_vpn"
         android:title="VPN"/>
+    <item
+        android:id="@+id/menu_profile"
+        android:icon="@drawable/ic_profile"
+        android:title="Profile"/>
 </menu>

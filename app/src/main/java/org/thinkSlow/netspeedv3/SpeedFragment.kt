@@ -67,7 +67,21 @@ class SpeedFragment : Fragment(R.layout.fragment_speed) {
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
+        // Restore state from service's static flag
+        restoreServiceState()
+
         startUpdatingSpeed()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restoreServiceState()
+    }
+
+    /** Sync the button/UI with whether the service is actually running */
+    private fun restoreServiceState() {
+        isServiceRunning = NetworkSpeedService.isActive
+        updateButton()
     }
 
     private fun toggleService() {
@@ -83,7 +97,6 @@ class SpeedFragment : Fragment(R.layout.fragment_speed) {
             else
                 getString(R.string.start_notification)
     }
-
 
     private fun startSpeedService() {
         val intent = Intent(requireContext(), NetworkSpeedService::class.java)

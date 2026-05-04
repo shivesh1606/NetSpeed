@@ -1,9 +1,9 @@
 package org.thinkSlow.netspeedv3
 
-import android.R
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -29,6 +29,10 @@ private const val PKT_HELLO: Byte = 1
 private const val PKT_WELCOME: Byte = 2
 private const val PKT_CLIENT_ACK: Byte = 3
 private const val PKT_DATA: Byte = 4
+private const val PKT_BYE: Byte = 5
+private const val PKT_KEEPALIVE: Byte = 6
+
+private const val KEEPALIVE_INTERVAL_MS = 15_000L // Send keepalive every 15s
 
 private const val HEADER_SIZE = 5
 private const val SERVER_PORT = 5555
@@ -211,7 +215,33 @@ class MyVpnService : VpnService() {
 
     companion object {
         const val ACTION_STOP = "STOP_VPN"
+        const val VPN_NOTIF_ID = 200 // Unique — Speed service uses 100
         private const val TAG = "ThinkSlowVPN"
+
+        /** Static flag so the UI can check if VPN is active even after process recreation */
+        @Volatile
+        var isActive = false
+            private set
+
+        /** The currently assigned VPN IP — survives fragment recreation */
+        @Volatile
+        var activeIpStr: String = ""
+            private set
+
+        /** Current session ID as unsigned string — survives fragment recreation */
+        @Volatile
+        var activeSessionId: String = ""
+            private set
+
+        /** Current MTU value */
+        @Volatile
+        var activeMtu: Int = DEFAULT_MTU
+            private set
+
+        /** Current MSS clamp value */
+        @Volatile
+        var activeMss: Int = CLAMP_MSS
+            private set
     }
     private val socketLock = ReentrantLock()
     @Volatile
@@ -222,6 +252,7 @@ class MyVpnService : VpnService() {
     private var assignedIpStr: String = "0.0.0.0" // Store this for UI updates
     private var currentClampMss = CLAMP_MSS
     private var globalSocket: DatagramSocket? = null
+    private var serverAddress: InetSocketAddress? = null
 
 
     // Helper to safely send through the shared socket
@@ -242,6 +273,7 @@ class MyVpnService : VpnService() {
         // 1. Update the clamping value (MTU - 40 for IP/TCP - 80 for safety)
         // We use a safe margin to avoid "re-fragmentation"
         currentClampMss = newMtu - 120
+        activeMss = currentClampMss
 
         // 2. We can't easily change the MTU of an existing TUN interface without re-establishing it.
         // However, by updating our internal CLAMP_MSS, the TCP connections will naturally shrink
@@ -341,11 +373,19 @@ class MyVpnService : VpnService() {
         globalSocket = socket
 
         val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
+        serverAddress = serverAddr
 
         try {
             val assignedIp = performHandshake(socket, serverAddr, DatagramPacket(ByteArray(1600), 1600))
             createTun(assignedIp)
             broadcastVpnStatus(assignedIp)
+
+            // Update static state so UI survives recreation
+            isActive = true
+            activeIpStr = assignedIp
+            activeSessionId = currentSessionId.toUInt().toString()
+            activeMtu = DEFAULT_MTU
+            activeMss = currentClampMss
 
             val fd = tunInterface!!.fileDescriptor
             val tunIn = FileInputStream(fd)
@@ -421,11 +461,41 @@ class MyVpnService : VpnService() {
                 }
             }
 
+            // --- THREAD 3: KEEPALIVE ---
+            val keepaliveThread = Thread {
+                val kaBuffer = ByteArray(HEADER_SIZE)
+                try {
+                    while (running) {
+                        Thread.sleep(KEEPALIVE_INTERVAL_MS)
+                        if (!running) break
+
+                        kaBuffer[0] = PKT_KEEPALIVE
+                        kaBuffer[1] = (currentSessionId shr 24).toByte()
+                        kaBuffer[2] = (currentSessionId shr 16).toByte()
+                        kaBuffer[3] = (currentSessionId shr 8).toByte()
+                        kaBuffer[4] = currentSessionId.toByte()
+
+                        val packet = DatagramPacket(kaBuffer, HEADER_SIZE, serverAddr)
+                        socketLock.withLock {
+                            if (running) globalSocket?.send(packet)
+                        }
+                        Log.d(TAG, "Keepalive sent")
+                    }
+                } catch (e: InterruptedException) {
+                    // Normal on shutdown
+                } catch (e: Exception) {
+                    if (running) Log.e(TAG, "Keepalive failure: ${e.message}")
+                }
+            }
+
             uplinkThread.start()
             downlinkThread.start()
+            keepaliveThread.start()
 
             uplinkThread.join()
             downlinkThread.join()
+            keepaliveThread.interrupt() // wake from sleep
+            keepaliveThread.join(2000)  // wait max 2s
 
         } catch (e: Exception) {
             Log.e(TAG, "VPN Main Loop Error", e)
@@ -525,6 +595,12 @@ class MyVpnService : VpnService() {
     fun disconnectVpn() {
         if (!running) return
         running = false
+        isActive = false
+        activeIpStr = ""
+        activeSessionId = ""
+
+        // Best-effort: send PKT_BYE to server so it frees our session
+        sendByePacket()
 
         try {
             tunInterface?.close()
@@ -550,6 +626,32 @@ class MyVpnService : VpnService() {
     /* ============================================================
      *  UTIL
      * ============================================================ */
+    /**
+     * Send PKT_BYE to the server (best-effort, fire 3 times for UDP reliability).
+     * Must be called BEFORE the socket is closed.
+     */
+    private fun sendByePacket() {
+        try {
+            val addr = serverAddress ?: return
+            val byeData = PacketHeader(PKT_BYE, currentSessionId).toByteArray()
+            val packet = DatagramPacket(byeData, byeData.size, addr)
+
+            socketLock.withLock {
+                val sock = globalSocket ?: return
+                // Send 3 times — UDP is unreliable, and this is best-effort
+                repeat(3) {
+                    try {
+                        sock.send(packet)
+                    } catch (_: Exception) { }
+                    Thread.sleep(10) // tiny gap between retries
+                }
+            }
+            Log.i(TAG, "PKT_BYE sent (3x) for session ${currentSessionId.toUInt()}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send BYE: ${e.message}")
+        }
+    }
+
     private fun intToIp(ip: Int): String =
         "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
 
@@ -572,14 +674,28 @@ class MyVpnService : VpnService() {
                 )
         }
 
+        // Tap notification → open app
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openAppPending = PendingIntent.getActivity(
+            this, 1, openAppIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            else
+                PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val notification =
             NotificationCompat.Builder(this, channelId)
                 .setContentTitle("ThinkSlow VPN")
                 .setContentText("VPN is running")
-                .setSmallIcon(R.drawable.stat_sys_warning)
+                .setSmallIcon(R.drawable.ic_vpn)
                 .setOngoing(true)
+                .setContentIntent(openAppPending)
+                .setOnlyAlertOnce(true)
                 .build()
 
-        startForeground(1, notification)
+        startForeground(VPN_NOTIF_ID, notification)
     }
 }

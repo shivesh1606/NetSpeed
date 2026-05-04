@@ -10,6 +10,45 @@
         android:gravity="center"
         android:padding="24dp">
 
+        <!-- Auth Gate: shown when not signed in -->
+        <LinearLayout
+            android:id="@+id/ll_auth_gate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#FFF3E0"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/vpn_auth_required"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#E65100"
+                android:gravity="center" />
+
+            <Button
+                android:id="@+id/btn_go_sign_in"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/go_to_sign_in"
+                android:backgroundTint="#FF9800"
+                android:textColor="@android:color/white" />
+        </LinearLayout>
+
+        <!-- Saved servers dropdown -->
+        <Spinner
+            android:id="@+id/spinner_saved_servers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:visibility="gone" />
+
         <EditText
             android:id="@+id/et_server_ip"
             android:layout_width="match_parent"
