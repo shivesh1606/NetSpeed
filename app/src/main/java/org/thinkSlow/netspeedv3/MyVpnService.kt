@@ -578,14 +578,35 @@ class MyVpnService : VpnService() {
      *  TUN CREATION
      * ============================================================ */
     private fun createTun(ip: String) {
-        tunInterface = Builder()
+        val builder = Builder()
             .setSession("ThinkSlow VPN")
             .addAddress(ip, 24)
             .addDnsServer("8.8.8.8")
             .addRoute("0.0.0.0", 0)
             .setMtu(DEFAULT_MTU)
-            .establish()
 
+        // Apply split tunneling — exclude selected apps from VPN
+        val settingsPrefs = getSharedPreferences(
+            VpnSettingsFragment.PREFS_NAME, MODE_PRIVATE
+        )
+        val splitEnabled = settingsPrefs.getBoolean(
+            VpnSettingsFragment.KEY_SPLIT_TUNNEL_ENABLED, false
+        )
+        if (splitEnabled) {
+            val excluded = settingsPrefs.getStringSet(
+                VpnSettingsFragment.KEY_EXCLUDED_APPS, emptySet()
+            ) ?: emptySet()
+            for (pkg in excluded) {
+                try {
+                    builder.addDisallowedApplication(pkg)
+                    Log.i(TAG, "Split tunnel: excluding $pkg")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to exclude $pkg: ${e.message}")
+                }
+            }
+        }
+
+        tunInterface = builder.establish()
         Log.i(TAG, "TUN created with IP $ip")
     }
 

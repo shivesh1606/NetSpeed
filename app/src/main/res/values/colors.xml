@@ -1,15 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- Existing colors -->
+    <!-- Base -->
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <!-- App Theme Colors -->
-    <color name="primaryBlue">#1976D2</color>     <!-- Start button blue -->
-    <color name="primaryRed">#D32F2F</color>      <!-- Stop button red -->
-    <color name="textGreen">#2E7D32</color>       <!-- Speed text -->
-    <color name="navItemActive">#1976D2</color>   <!-- Bottom Nav active -->
-    <color name="navItemInactive">#757575</color> <!-- Bottom Nav inactive -->
+    <!-- Primary teal palette -->
+    <color name="primary">#1D9E75</color>
+    <color name="primaryDark">#0F6E56</color>
+    <color name="primaryLight">#E1F5EE</color>
+    <color name="primarySurface">#F0FAF5</color>
+    <color name="primaryDeep">#085041</color>
+
+    <!-- Accent colors (used for metric icon backgrounds) -->
+    <color name="accentBlue">#185FA5</color>
+    <color name="accentBlueBg">#E6F1FB</color>
+    <color name="accentPurple">#534AB7</color>
+    <color name="accentPurpleBg">#EEEDFE</color>
+    <color name="accentAmber">#854F0B</color>
+    <color name="accentAmberBg">#FAEEDA</color>
+    <color name="accentPink">#993556</color>
+
+    <!-- Semantic -->
+    <color name="danger">#D32F2F</color>
+    <color name="dangerLight">#FCEBEB</color>
+    <color name="warning">#E65100</color>
+    <color name="warningLight">#FFF3E0</color>
+    <color name="warningText">#854F0B</color>
+
+    <!-- Text -->
+    <color name="textPrimary">#1C1C1E</color>
+    <color name="textSecondary">#6B7280</color>
+    <color name="textTertiary">#8E8E93</color>
+    <color name="textOnPrimary">#FFFFFF</color>
+    <color name="textHint">#C7C7CC</color>
+
+    <!-- Surface / Background (Clean Trust: light airy) -->
+    <color name="surface">#FFFFFF</color>
+    <color name="surfaceVariant">#F6F8FA</color>
+    <color name="background">#F6F8FA</color>
+
+    <!-- Border -->
+    <color name="borderLight">#E5E7EB</color>
+    <color name="borderMedium">#D1D5DB</color>
+
+    <!-- Connect ring states -->
+    <color name="ringDisconnected">#D1D5DB</color>
+    <color name="ringDisconnectedGlow">#1AD1D5DB</color>
+    <color name="ringConnected">@color/primary</color>
+    <color name="ringConnectedGlow">#1A1D9E75</color>
+
+    <!-- Bottom Nav -->
+    <color name="navItemActive">@color/primary</color>
+    <color name="navItemInactive">#C7C7CC</color>
+
+    <!-- Legacy aliases (keep for compatibility) -->
+    <color name="primaryBlue">#1976D2</color>
+    <color name="primaryRed">#D32F2F</color>
+    <color name="textGreen">@color/primary</color>
 
 </resources>

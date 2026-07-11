@@ -3,10 +3,10 @@ package org.thinkSlow.netspeedv3
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -14,12 +14,14 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.switchmaterial.SwitchMaterial
 
 class ProfileFragment : Fragment(R.layout.fragment_profile) {
@@ -40,8 +42,8 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
     // Views
     private lateinit var signedOutLayout: LinearLayout
     private lateinit var signedInLayout: LinearLayout
-    private lateinit var btnSignIn: Button
-    private lateinit var btnSignOut: Button
+    private lateinit var btnSignIn: MaterialButton
+    private lateinit var btnSignOut: MaterialButton
     private lateinit var ivAvatar: ImageView
     private lateinit var tvName: TextView
     private lateinit var tvEmail: TextView
@@ -50,7 +52,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
 
     // Saved servers
     private lateinit var etAddServer: EditText
-    private lateinit var btnAddServer: Button
+    private lateinit var btnAddServer: MaterialButton
     private lateinit var llServerList: LinearLayout
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -156,49 +158,52 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
         if (servers.isEmpty()) {
             val empty = TextView(requireContext()).apply {
                 text = getString(R.string.no_saved_servers)
-                setTextColor(0xFF999999.toInt())
+                setTextColor(ContextCompat.getColor(requireContext(), R.color.textTertiary))
                 textSize = 13f
-                setPadding(0, 8, 0, 0)
+                setPadding(0, dpToPx(8), 0, 0)
             }
             llServerList.addView(empty)
             return
         }
 
         for (ip in servers) {
-            val row = LinearLayout(requireContext()).apply {
+            val card = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 12, 0, 12)
+                background = ContextCompat.getDrawable(requireContext(), R.drawable.bg_server_card)
+                setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.bottomMargin = dpToPx(8)
+                layoutParams = lp
             }
 
             val label = TextView(requireContext()).apply {
                 text = ip
-                textSize = 15f
-                setTextColor(0xFF222222.toInt())
+                textSize = 14f
+                setTextColor(ContextCompat.getColor(requireContext(), R.color.textPrimary))
+                typeface = Typeface.DEFAULT_BOLD
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
 
             val deleteBtn = ImageButton(requireContext()).apply {
-                setImageResource(android.R.drawable.ic_delete)
+                setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+                setColorFilter(ContextCompat.getColor(requireContext(), R.color.textTertiary))
                 setBackgroundColor(0x00000000) // transparent
                 contentDescription = "Remove $ip"
                 setOnClickListener { removeServer(ip) }
             }
 
-            row.addView(label)
-            row.addView(deleteBtn)
-
-            llServerList.addView(row)
-
-            // Divider
-            val divider = View(requireContext()).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 1
-                )
-                setBackgroundColor(0xFFDDDDDD.toInt())
-            }
-            llServerList.addView(divider)
+            card.addView(label)
+            card.addView(deleteBtn)
+            llServerList.addView(card)
         }
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     // ── Auth ────────────────────────────────────────────────────
