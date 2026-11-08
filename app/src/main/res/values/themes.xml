@@ -1,19 +1,31 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Base application theme. -->
     <style name="Base.Theme.NetSpeedv3" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <!-- Primary colors -->
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primaryDark</item>
+        <item name="colorOnPrimary">@color/textOnPrimary</item>
+        <item name="colorPrimaryContainer">@color/primaryLight</item>
 
-        <!-- Status bar customization -->
+        <!-- Surface -->
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorSurfaceVariant">@color/surfaceVariant</item>
+        <item name="android:colorBackground">@color/background</item>
+        <item name="colorOnSurface">@color/textPrimary</item>
+        <item name="colorOnSurfaceVariant">@color/textSecondary</item>
+
+        <!-- Error -->
+        <item name="colorError">@color/danger</item>
+
+        <!-- Status bar -->
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">false</item> <!-- false = light icons -->
+        <item name="android:windowLightStatusBar">true</item>
 
-        <!-- Navigation bar customization -->
-        <item name="android:navigationBarColor">@android:color/black</item>
-        <item name="android:windowLightNavigationBar">true</item> <!-- true = dark icons -->
-
+        <!-- Navigation bar -->
+        <item name="android:navigationBarColor">@color/surfaceVariant</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
     <style name="Theme.NetSpeedv3" parent="Base.Theme.NetSpeedv3" />
+
 </resources>

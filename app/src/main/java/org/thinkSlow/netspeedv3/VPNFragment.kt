@@ -9,22 +9,34 @@ import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.google.android.material.button.MaterialButton
 
 class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
-    private lateinit var connectBtn: Button
-    private lateinit var disconnectBtn: Button
+    private lateinit var connectBtn: View            // FrameLayout ring button
+    private lateinit var connectRingOuter: View       // Outer ring for styling
+    private lateinit var connectIcon: ImageView       // Power icon inside ring
+    private lateinit var connectLabel: TextView       // "Connected" / "Disconnected" label
+    private lateinit var disconnectBtn: MaterialButton
     private lateinit var serverIpInput: EditText
     private lateinit var statusTextView: TextView
     private lateinit var spinnerServers: Spinner
+
+    // Status banner (connected state)
+    private lateinit var statusBanner: View
+    private lateinit var statusBannerText: TextView
+
+    // Stats row
+    private lateinit var statsRow: View
 
     // Session info panel
     private lateinit var infoPanel: View
@@ -34,23 +46,29 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     // Auth gate overlay
     private lateinit var authGateLayout: View
-    private lateinit var btnGoSignIn: Button
+    private lateinit var btnGoSignIn: View
 
     private val vpnStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             // Handle simple toast/status messages
             intent?.getStringExtra("msg")?.let { msg ->
                 statusTextView.text = msg
-                updateButtons(msg)
+                // updateConnectionUI(false) overwrites the status text, so surface failures as a toast
+                if (msg.startsWith("Connection failed")) {
+                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+                }
+                updateConnectionUI(msg.contains("Connected") || msg.contains("Connecting"))
 
                 if (msg.contains("Disconnected")) {
                     infoPanel.visibility = View.GONE
+                    statsRow.visibility = View.GONE
                 }
             }
 
             // Handle session-specific info updates
             if (intent?.action == "vpn_status_update") {
                 infoPanel.visibility = View.VISIBLE
+                statsRow.visibility = View.VISIBLE
                 tvAssignedIp.text = intent.getStringExtra("ip") ?: "0.0.0.0"
                 tvSessionId.text = intent.getStringExtra("sid") ?: "N/A"
 
@@ -68,6 +86,22 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // Connect ring button
+        connectBtn = view.findViewById(R.id.btn_connect_vpn)
+        connectRingOuter = view.findViewById(R.id.connect_ring_outer)
+        connectIcon = view.findViewById(R.id.iv_connect_icon)
+        connectLabel = view.findViewById(R.id.tv_connect_label)
+
+        // Disconnect button
+        disconnectBtn = view.findViewById(R.id.btn_disconnect_vpn)
+
+        // Status banner
+        statusBanner = view.findViewById(R.id.ll_status_banner)
+        statusBannerText = view.findViewById(R.id.tv_status_banner_text)
+
+        // Stats
+        statsRow = view.findViewById(R.id.ll_stats_row)
+
         // Session info panel
         infoPanel = view.findViewById(R.id.ll_info_panel)
         tvAssignedIp = view.findViewById(R.id.tv_assigned_ip)
@@ -78,9 +112,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         authGateLayout = view.findViewById(R.id.ll_auth_gate)
         btnGoSignIn = view.findViewById(R.id.btn_go_sign_in)
 
-        // Main controls
-        connectBtn = view.findViewById(R.id.btn_connect_vpn)
-        disconnectBtn = view.findViewById(R.id.btn_disconnect_vpn)
+        // Server input
         serverIpInput = view.findViewById(R.id.et_server_ip)
         statusTextView = view.findViewById(R.id.tv_vpn_status)
         spinnerServers = view.findViewById(R.id.spinner_saved_servers)
@@ -126,25 +158,59 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             .unregisterReceiver(vpnStatusReceiver)
     }
 
+    // ── Visual State Management ────────────────────────────────
+
+    private fun updateConnectionUI(isConnected: Boolean) {
+        if (isConnected) {
+            // Connected: green ring, teal fill, shield icon
+            connectRingOuter.setBackgroundResource(R.drawable.ring_connected)
+            connectBtn.setBackgroundResource(R.drawable.circle_connected)
+            connectIcon.setImageResource(R.drawable.ic_shield_check)
+            connectIcon.imageTintList = ContextCompat.getColorStateList(requireContext(), R.color.primaryDark)
+            connectLabel.text = getString(R.string.vpn_status_protected)
+            connectLabel.setTextColor(ContextCompat.getColor(requireContext(), R.color.primaryDark))
+            statusTextView.visibility = View.GONE
+            statusBanner.visibility = View.VISIBLE
+            val serverIp = serverIpInput.text.toString().trim().ifEmpty { "server" }
+            statusBannerText.text = "Connected to $serverIp"
+            disconnectBtn.visibility = View.VISIBLE
+            connectBtn.isClickable = false
+        } else {
+            // Disconnected: gray ring, white fill, power icon
+            connectRingOuter.setBackgroundResource(R.drawable.ring_disconnected)
+            connectBtn.setBackgroundResource(R.drawable.circle_disconnected)
+            connectIcon.setImageResource(R.drawable.ic_power)
+            connectIcon.imageTintList = ContextCompat.getColorStateList(requireContext(), R.color.textSecondary)
+            connectLabel.text = "Connect"
+            connectLabel.setTextColor(ContextCompat.getColor(requireContext(), R.color.textSecondary))
+            statusTextView.visibility = View.VISIBLE
+            statusTextView.text = getString(R.string.vpn_status_not_connected)
+            statusTextView.setTextColor(ContextCompat.getColor(requireContext(), R.color.textTertiary))
+            statusBanner.visibility = View.GONE
+            disconnectBtn.visibility = View.GONE
+            connectBtn.isClickable = true
+        }
+    }
+
     // ── State Restoration ───────────────────────────────────────
 
     /** Restore UI if the VPN service is still running (e.g. after app backgrounded) */
     private fun restoreVpnState() {
         if (MyVpnService.isActive) {
-            statusTextView.text = "VPN Connected"
-            updateButtons(isVpnRunning = true)
+            updateConnectionUI(true)
 
             // Restore session info panel
             infoPanel.visibility = View.VISIBLE
+            statsRow.visibility = View.VISIBLE
             tvAssignedIp.text = MyVpnService.activeIpStr.ifBlank { "0.0.0.0" }
             tvSessionId.text = MyVpnService.activeSessionId.ifBlank { "N/A" }
             tvActiveMss.text = "${MyVpnService.activeMtu} (MSS: ${MyVpnService.activeMss})"
         } else {
             // Only reset if we're not already showing a "Disconnecting..." state
-            if (statusTextView.text != "Disconnecting...") {
-                statusTextView.text = "VPN Disconnected"
-                updateButtons(isVpnRunning = false)
+            if (statusTextView.text != getString(R.string.vpn_disconnecting)) {
+                updateConnectionUI(false)
                 infoPanel.visibility = View.GONE
+                statsRow.visibility = View.GONE
             }
         }
     }
@@ -177,11 +243,11 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             authGateLayout.visibility = View.GONE
             // Don't override button state if VPN is already running
             if (!MyVpnService.isActive) {
-                connectBtn.isEnabled = true
+                connectBtn.isClickable = true
             }
         } else {
             authGateLayout.visibility = View.VISIBLE
-            connectBtn.isEnabled = false
+            connectBtn.isClickable = false
             disconnectBtn.isEnabled = false
         }
     }
@@ -207,8 +273,8 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         intent.putExtra("server_ip", serverIp)
         requireContext().startService(intent)
 
-        statusTextView.text = "VPN Connected…"
-        updateButtons(isVpnRunning = true)
+        statusTextView.text = getString(R.string.vpn_connecting)
+        updateConnectionUI(true)
     }
 
     private fun stopVpn() {
@@ -216,17 +282,6 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         intent.action = MyVpnService.ACTION_STOP
         requireContext().startService(intent)
 
-        statusTextView.text = "Disconnecting..."
-    }
-
-    private fun updateButtons(msg: String) {
-        val running = msg.contains("Connected") || msg.contains("Connecting")
-        connectBtn.isEnabled = !running
-        disconnectBtn.isEnabled = running
-    }
-
-    private fun updateButtons(isVpnRunning: Boolean) {
-        connectBtn.isEnabled = !isVpnRunning
-        disconnectBtn.isEnabled = isVpnRunning
+        statusTextView.text = getString(R.string.vpn_disconnecting)
     }
 }

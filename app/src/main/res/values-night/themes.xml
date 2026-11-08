@@ -1,7 +1,29 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+
     <style name="Base.Theme.NetSpeedv3" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your dark theme here. -->
-        <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+        <!-- Primary colors (same accent in dark mode) -->
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primaryDark</item>
+        <item name="colorOnPrimary">@color/textOnPrimary</item>
+        <item name="colorPrimaryContainer">#1A3D2F</item>
+
+        <!-- Dark surfaces -->
+        <item name="colorSurface">#1E1E1E</item>
+        <item name="colorSurfaceVariant">#2A2A2A</item>
+        <item name="android:colorBackground">#121212</item>
+        <item name="colorOnSurface">#E8E8E8</item>
+        <item name="colorOnSurfaceVariant">#AAAAAA</item>
+
+        <!-- Error -->
+        <item name="colorError">@color/danger</item>
+
+        <!-- Status bar -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+
+        <!-- Navigation bar -->
+        <item name="android:navigationBarColor">#1E1E1E</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
+
 </resources>

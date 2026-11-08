@@ -14,21 +14,26 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Load default fragment only once
+        // Load default fragment only once (VPN is the primary screen)
         if (savedInstanceState == null) {
-            replaceFragment(SpeedFragment())
+            replaceFragment(VPNFragment())
         }
 
         nav = findViewById(R.id.bottom_nav)
+        nav.selectedItemId = R.id.menu_vpn
 
         nav.setOnItemSelectedListener { item ->
             when (item.itemId) {
+                R.id.menu_vpn -> {
+                    replaceFragment(VPNFragment())
+                    true
+                }
                 R.id.menu_speed -> {
                     replaceFragment(SpeedFragment())
                     true
                 }
-                R.id.menu_vpn -> {
-                    replaceFragment(VPNFragment())
+                R.id.menu_settings -> {
+                    replaceFragment(VpnSettingsFragment())
                     true
                 }
                 R.id.menu_profile -> {

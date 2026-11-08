@@ -8,9 +8,14 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
+import android.system.StructPollfd
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
@@ -18,6 +23,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import kotlin.experimental.xor
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -33,6 +39,9 @@ private const val PKT_BYE: Byte = 5
 private const val PKT_KEEPALIVE: Byte = 6
 
 private const val KEEPALIVE_INTERVAL_MS = 15_000L // Send keepalive every 15s
+private const val HANDSHAKE_ATTEMPTS = 4          // HELLO retries (matches Windows client)
+private const val HANDSHAKE_TIMEOUT_MS = 5_000    // Wait per attempt for WELCOME
+private const val WELCOME_SIZE = 13               // header(5) + assigned_ip(4) + ys(4)
 
 private const val HEADER_SIZE = 5
 private const val SERVER_PORT = 5555
@@ -246,6 +255,13 @@ class MyVpnService : VpnService() {
     private val socketLock = ReentrantLock()
     @Volatile
     private var running = false
+
+    /**
+     * Token for the current connection attempt (null when idle). Set when a connect starts,
+     * cleared exactly once by disconnectVpn() — so cleanup also runs when the handshake fails,
+     * and a late teardown from an old session can never kill a newer one.
+     */
+    private val activeSession = AtomicReference<Any?>(null)
     private var currentSessionId: Int = 0
     private var tunInterface: ParcelFileDescriptor? = null
     private var serverIp: String = ""
@@ -253,6 +269,9 @@ class MyVpnService : VpnService() {
     private var currentClampMss = CLAMP_MSS
     private var globalSocket: DatagramSocket? = null
     private var serverAddress: InetSocketAddress? = null
+
+    /** Write end of the current session's wake pipe; a byte here pops the uplink out of poll() */
+    private var wakeWriteFd: FileDescriptor? = null
 
 
     // Helper to safely send through the shared socket
@@ -334,7 +353,9 @@ class MyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.action?.let {
             if (it == ACTION_STOP) {
-                disconnectVpn()
+                val session = activeSession.get()
+                // Off the main thread: sending PKT_BYE here would throw NetworkOnMainThreadException
+                if (session != null) Thread { disconnectVpn(session) }.start() else stopSelf()
                 return START_NOT_STICKY
             }
         }
@@ -348,10 +369,11 @@ class MyVpnService : VpnService() {
 
         startForegroundNotification()
 
-        if (!running) {
+        val session = Any()
+        if (activeSession.compareAndSet(null, session)) {
             Thread {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
-                vpnMainLoop()
+                vpnMainLoop(session)
             }.start()
         }
 
@@ -364,43 +386,79 @@ class MyVpnService : VpnService() {
     /* ============================================================
          * MAIN VPN LOOP (MULTI-THREADED FULL-DUPLEX)
          * ============================================================ */
-    private fun vpnMainLoop() {
+    private fun vpnMainLoop(session: Any) {
         Log.i(TAG, "VPN multi-threaded loop starting")
 
-        // Initial socket creation
-        val socket = DatagramSocket()
-        protect(socket)
-        globalSocket = socket
-
-        val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
-        serverAddress = serverAddr
+        var socket: DatagramSocket? = null
+        var pipe: Array<FileDescriptor>? = null
+        var failureMsg: String? = null
 
         try {
-            val assignedIp = performHandshake(socket, serverAddr, DatagramPacket(ByteArray(1600), 1600))
-            createTun(assignedIp)
+            val sock = DatagramSocket()
+            socket = sock
+            protect(sock)
+            socketLock.withLock {
+                // User may have hit Disconnect before we got here
+                if (activeSession.get() !== session) return
+                globalSocket = sock
+            }
+            currentSessionId = 0
+
+            val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
+            serverAddress = serverAddr
+
+            val assignedIp = performHandshake(sock, serverAddr)
+            val tun = createTun(assignedIp)
+            val wakePipe = Os.pipe() // [0] read end (uplink polls it), [1] write end (disconnectVpn)
+            pipe = wakePipe
+
+            socketLock.withLock {
+                // Disconnect during handshake/establish: don't leave a TUN up that blackholes traffic
+                if (activeSession.get() !== session) {
+                    tun.close()
+                    return
+                }
+                tunInterface = tun
+                wakeWriteFd = wakePipe[1]
+                running = true
+
+                // Update static state so UI survives recreation
+                isActive = true
+                activeIpStr = assignedIp
+                activeSessionId = currentSessionId.toUInt().toString()
+                activeMtu = DEFAULT_MTU
+                activeMss = currentClampMss
+            }
             broadcastVpnStatus(assignedIp)
 
-            // Update static state so UI survives recreation
-            isActive = true
-            activeIpStr = assignedIp
-            activeSessionId = currentSessionId.toUInt().toString()
-            activeMtu = DEFAULT_MTU
-            activeMss = currentClampMss
-
-            val fd = tunInterface!!.fileDescriptor
+            val fd = tun.fileDescriptor
             val tunIn = FileInputStream(fd)
             val tunOut = FileOutputStream(fd)
 
-            socket.sendBufferSize = 1024 * 1024
-            socket.receiveBufferSize = 1024 * 1024
-
-            running = true
+            sock.sendBufferSize = 1024 * 1024
+            sock.receiveBufferSize = 1024 * 1024
 
             // --- THREAD 1: UPLINK (TUN -> UDP) ---
             val uplinkThread = Thread {
                 val sendBuffer = ByteArray(1600)
+                // Wait on the TUN *and* the wake pipe: closing the TUN doesn't wake a thread
+                // blocked in read(), so disconnectVpn() writes a byte to the pipe instead
+                val tunPoll = StructPollfd().apply { this.fd = tun.fileDescriptor; events = OsConstants.POLLIN.toShort() }
+                val wakePoll = StructPollfd().apply { this.fd = wakePipe[0]; events = OsConstants.POLLIN.toShort() }
+                val pollFds = arrayOf(tunPoll, wakePoll)
                 try {
                     while (running) {
+                        tunPoll.revents = 0
+                        wakePoll.revents = 0
+                        try {
+                            Os.poll(pollFds, -1)
+                        } catch (e: ErrnoException) {
+                            if (e.errno == OsConstants.EINTR) continue
+                            throw e
+                        }
+                        if (wakePoll.revents.toInt() != 0) break // disconnectVpn() woke us
+                        if ((tunPoll.revents.toInt() and OsConstants.POLLIN) == 0) break // TUN closed/errored
+
                         val len = tunIn.read(sendBuffer, HEADER_SIZE, DEFAULT_MTU)
                         if (len > 0) {
                             clampTcpMssIncremental(sendBuffer, len, HEADER_SIZE, currentClampMss)
@@ -417,8 +475,10 @@ class MyVpnService : VpnService() {
                             // Use safeSend instead of direct socket.send
                             val packet = DatagramPacket(sendBuffer, HEADER_SIZE + len, serverAddr)
 
+                            // Send on this session's socket: once closed it throws, so a
+                            // stale thread can't leak packets into a newer session
                             socketLock.withLock {
-                                if (running) globalSocket?.send(packet)
+                                if (running) sock.send(packet)
                             }
                         }
                     }
@@ -438,9 +498,9 @@ class MyVpnService : VpnService() {
                         // We must receive on the specific socket instance
                         val recvPacket = DatagramPacket(recvBuffer, recvBuffer.size)
 
-                        // Receive is a blocking call; if the socket is closed
-                        // by the other thread, this will throw an exception
-                        socket.receive(recvPacket)
+                        // Receive is a blocking call; disconnectVpn() closes the
+                        // socket, which makes this throw and ends the thread
+                        sock.receive(recvPacket)
 
                         val totalLen = recvPacket.length
                         if (totalLen < HEADER_SIZE) continue
@@ -477,7 +537,7 @@ class MyVpnService : VpnService() {
 
                         val packet = DatagramPacket(kaBuffer, HEADER_SIZE, serverAddr)
                         socketLock.withLock {
-                            if (running) globalSocket?.send(packet)
+                            if (running) sock.send(packet)
                         }
                         Log.d(TAG, "Keepalive sent")
                     }
@@ -498,13 +558,19 @@ class MyVpnService : VpnService() {
             keepaliveThread.join(2000)  // wait max 2s
 
         } catch (e: Exception) {
-            Log.e(TAG, "VPN Main Loop Error", e)
-        } finally {
-            socketLock.withLock {
-                socket.close()
-                globalSocket = null
+            // If we were stopped, the exception is just the closed socket waking us — not an error
+            if (activeSession.get() === session) {
+                Log.e(TAG, "VPN Main Loop Error", e)
+                if (!running) failureMsg = "Connection failed: ${e.message ?: e.javaClass.simpleName}"
             }
-            disconnectVpn()
+        } finally {
+            disconnectVpn(session, failureMsg ?: "VPN Disconnected")
+            socket?.close() // no-op if disconnectVpn already closed it
+            // Uplink has exited by now (joined above), so nothing is polling the pipe
+            pipe?.let { p ->
+                socketLock.withLock { if (wakeWriteFd === p[1]) wakeWriteFd = null }
+                p.forEach { runCatching { Os.close(it) } }
+            }
         }
     }
 
@@ -514,8 +580,7 @@ class MyVpnService : VpnService() {
      * ============================================================ */
     private fun performHandshake(
         socket: DatagramSocket,
-        server: InetSocketAddress,
-        recvPacket: DatagramPacket
+        server: InetSocketAddress
     ): String {
 
         val magic = (System.currentTimeMillis() and 0xffffffffL).toInt()
@@ -538,12 +603,35 @@ class MyVpnService : VpnService() {
                 hello[12] = yc.toByte()
 
 
-        socket.send(DatagramPacket(hello, hello.size, server))
-        Log.i(TAG, "HELLO sent")
+        // Retry HELLO with a per-attempt timeout so an unreachable server can't hang us forever.
+        // The same HELLO (same DH secret) is resent, so whichever WELCOME arrives matches our key.
+        val recvBuf = ByteArray(1600)
+        val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+        var gotWelcome = false
+        socket.soTimeout = HANDSHAKE_TIMEOUT_MS
+        try {
+            for (attempt in 1..HANDSHAKE_ATTEMPTS) {
+                socket.send(DatagramPacket(hello, hello.size, server))
+                Log.i(TAG, "HELLO sent (attempt $attempt/$HANDSHAKE_ATTEMPTS)")
 
-        socket.receive(recvPacket)
+                recvPacket.length = recvBuf.size // receive() shrinks length to the last datagram
+                try {
+                    socket.receive(recvPacket)
+                } catch (e: SocketTimeoutException) {
+                    continue
+                }
+                if (recvPacket.length >= WELCOME_SIZE && recvBuf[0] == PKT_WELCOME) {
+                    gotWelcome = true
+                    break
+                }
+            }
+        } finally {
+            // Back to blocking for the tunnel; ignore if the socket was closed by a stop
+            runCatching { socket.soTimeout = 0 }
+        }
+        if (!gotWelcome) throw SocketTimeoutException("server not responding")
+
         val hdr = PacketHeader.fromByteArray(recvPacket.data)
-        require(hdr.type == PKT_WELCOME) { "Expected WELCOME" }
 // Save the session ID globally
         this.currentSessionId = hdr.sessionId
         Log.i(TAG, "Handshake successful. Registered Session ID:${currentSessionId.toUInt()}")
@@ -577,36 +665,74 @@ class MyVpnService : VpnService() {
     /* ============================================================
      *  TUN CREATION
      * ============================================================ */
-    private fun createTun(ip: String) {
-        tunInterface = Builder()
+    private fun createTun(ip: String): ParcelFileDescriptor {
+        val builder = Builder()
             .setSession("ThinkSlow VPN")
             .addAddress(ip, 24)
             .addDnsServer("8.8.8.8")
             .addRoute("0.0.0.0", 0)
             .setMtu(DEFAULT_MTU)
-            .establish()
 
+        // Apply split tunneling — exclude selected apps from VPN
+        val settingsPrefs = getSharedPreferences(
+            VpnSettingsFragment.PREFS_NAME, MODE_PRIVATE
+        )
+        val splitEnabled = settingsPrefs.getBoolean(
+            VpnSettingsFragment.KEY_SPLIT_TUNNEL_ENABLED, false
+        )
+        if (splitEnabled) {
+            val excluded = settingsPrefs.getStringSet(
+                VpnSettingsFragment.KEY_EXCLUDED_APPS, emptySet()
+            ) ?: emptySet()
+            for (pkg in excluded) {
+                try {
+                    builder.addDisallowedApplication(pkg)
+                    Log.i(TAG, "Split tunnel: excluding $pkg")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to exclude $pkg: ${e.message}")
+                }
+            }
+        }
+
+        // establish() returns null if VPN permission was revoked
+        val tun = builder.establish() ?: throw IllegalStateException("VPN permission not granted")
         Log.i(TAG, "TUN created with IP $ip")
+        return tun
     }
 
     /* ============================================================
      *  CLEANUP
      * ============================================================ */
-    fun disconnectVpn() {
-        if (!running) return
-        running = false
-        isActive = false
-        activeIpStr = ""
-        activeSessionId = ""
+    /**
+     * Tears down [session] — runs at most once per session, whether it was connected,
+     * still handshaking, or failed. Safe to call from any thread.
+     */
+    private fun disconnectVpn(session: Any, message: String = "VPN Disconnected") {
+        socketLock.withLock {
+            if (!activeSession.compareAndSet(session, null)) return
+            running = false
+            isActive = false
+            activeIpStr = ""
+            activeSessionId = ""
 
-        // Best-effort: send PKT_BYE to server so it frees our session
-        sendByePacket()
+            // Best-effort: send PKT_BYE so the server frees our session.
+            // Only if WELCOME gave us a session ID — otherwise the server has nothing to free.
+            if (currentSessionId != 0) sendByePacket()
 
-        try {
-            tunInterface?.close()
+            // Closing the socket wakes any thread blocked in receive() (handshake or downlink)
+            globalSocket?.close()
+            globalSocket = null
+
+            // Wake the uplink out of poll() — closing the TUN alone wouldn't
+            wakeWriteFd?.let { runCatching { Os.write(it, byteArrayOf(1), 0, 1) } }
+            wakeWriteFd = null
+
+            try {
+                tunInterface?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "TUN close failed", e)
+            }
             tunInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "TUN close failed", e)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -614,12 +740,12 @@ class MyVpnService : VpnService() {
         else
             stopForeground(true)
 
-        sendToast("VPN Disconnected") // This is the trigger for your UI fix
+        sendToast(message) // This is the trigger for your UI fix
         stopSelf()
     }
 
     override fun onDestroy() {
-        disconnectVpn()
+        activeSession.get()?.let { disconnectVpn(it) }
         super.onDestroy()
     }
 

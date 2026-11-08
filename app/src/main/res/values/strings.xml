@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">NetSpeedv3</string>
+    <string name="app_name">NetSpeed</string>
     <string name="start_notification">Start Notification</string>
     <string name="stop_notification">Stop Notification</string>
     <string name="speed_format">⬇ %.2f Mbps | ⬆ %.2f Mbps</string>
@@ -8,9 +8,9 @@
     <string name="sign_in_prompt">Sign in to continue</string>
     <string name="sign_in_subtitle">A Google account is required to use the VPN</string>
     <string name="sign_in_google">Sign in with Google</string>
-    <string name="sign_out">Sign Out</string>
+    <string name="sign_out">Sign out</string>
     <string name="settings_header">Settings</string>
-    <string name="dark_theme">Dark Theme</string>
+    <string name="dark_theme">Dark theme</string>
     <string name="auto_speed_notif">Auto-start speed notification</string>
     <string name="vpn_auth_required">Sign in with Google to use the VPN</string>
     <string name="go_to_sign_in">Go to Profile to Sign In</string>
@@ -19,5 +19,61 @@
     <string name="add">Add</string>
     <string name="no_saved_servers">No servers saved yet</string>
     <string name="select_server_hint">Select a saved server</string>
+
+    <!-- VPN Screen -->
+    <string name="vpn_subtitle">Your private connection</string>
+    <string name="vpn_connected">Connected</string>
+    <string name="vpn_disconnected">Disconnected</string>
+    <string name="vpn_status_protected">Protected</string>
+    <string name="vpn_status_not_connected">Tap to connect</string>
+    <string name="vpn_connecting">Connecting…</string>
+    <string name="vpn_disconnecting">Disconnecting…</string>
+    <string name="label_download">Download</string>
+    <string name="label_upload">Upload</string>
+    <string name="label_assigned_ip">IP</string>
+    <string name="label_session_time">Session</string>
+    <string name="label_session_id">Session ID</string>
+    <string name="label_mtu">MTU</string>
+
+    <!-- Speed Screen -->
+    <string name="speed_test_title">Speed test</string>
+    <string name="run_speed_test">Run speed test</string>
+    <string name="label_ping">Ping</string>
+    <string name="label_jitter">Jitter</string>
+    <string name="speed_download_label">Download speed</string>
+    <string name="recent_tests">Recent tests</string>
+    <string name="no_speed_value">--</string>
+
+    <!-- Profile Screen -->
+    <string name="profile_title">Profile</string>
+    <string name="google_account_badge">Google account</string>
+    <string name="add_server">Add server</string>
+    <string name="notifications">Notifications</string>
+    <string name="auto_reconnect">Auto-reconnect</string>
+    <string name="about">About</string>
+
+    <!-- VPN Settings Screen -->
+    <string name="vpn_settings_title">VPN settings</string>
+    <string name="split_tunneling">Split tunneling</string>
+    <string name="split_tunneling_desc">Choose which apps bypass VPN</string>
+    <string name="bypassing_vpn">Bypassing VPN</string>
+    <string name="add_app">Add app</string>
+    <string name="protocol">Protocol</string>
+    <string name="protocol_desc">UDP (recommended)</string>
+    <string name="kill_switch">Kill switch</string>
+    <string name="kill_switch_desc">Block traffic if VPN drops</string>
+    <string name="auto_connect">Auto-connect</string>
+    <string name="auto_connect_desc">Connect when app opens</string>
+    <string name="no_excluded_apps">No apps excluded</string>
+    <string name="select_apps">Select apps</string>
+
+    <!-- Speed Screen extras -->
+    <string name="speed_monitor_title">Speed monitor</string>
+    <string name="data_usage_today">Data usage today</string>
+    <string name="data_down_format">%s down</string>
+    <string name="data_up_format">%s up</string>
+
+    <!-- Nav -->
+    <string name="nav_settings">Settings</string>
 
 </resources>
