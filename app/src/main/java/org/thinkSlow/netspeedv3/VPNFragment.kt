@@ -53,6 +53,10 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             // Handle simple toast/status messages
             intent?.getStringExtra("msg")?.let { msg ->
                 statusTextView.text = msg
+                // updateConnectionUI(false) overwrites the status text, so surface failures as a toast
+                if (msg.startsWith("Connection failed")) {
+                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+                }
                 updateConnectionUI(msg.contains("Connected") || msg.contains("Connecting"))
 
                 if (msg.contains("Disconnected")) {
