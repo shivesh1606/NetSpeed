@@ -19,6 +19,8 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.android.material.button.MaterialButton
+import org.thinkSlow.netspeedv3.vpn.AccessStore
+import org.thinkSlow.netspeedv3.vpn.BundleNode
 
 class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
@@ -44,9 +46,24 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
     private lateinit var tvActiveMss: TextView
     private lateinit var tvSessionId: TextView
 
+    private lateinit var tvSecurity: TextView
+
     // Auth gate overlay
     private lateinit var authGateLayout: View
     private lateinit var btnGoSignIn: View
+
+    // Access gate (protocol v2: no imported access, or it expired)
+    private lateinit var accessGateLayout: View
+    private lateinit var tvAccessGateText: TextView
+    private lateinit var btnGoProfile: View
+
+    // Server card, v2: node from the imported access instead of a typed IP
+    private lateinit var tvServerNode: TextView
+    private lateinit var tvServerDetail: TextView
+
+    private lateinit var accessStore: AccessStore
+    private var legacyV1 = false
+    private var nodes: List<BundleNode> = emptyList()
 
     private val vpnStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -54,7 +71,8 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             intent?.getStringExtra("msg")?.let { msg ->
                 statusTextView.text = msg
                 // updateConnectionUI(false) overwrites the status text, so surface failures as a toast
-                if (msg.startsWith("Connection failed")) {
+                // ("Disconnected: ..." is the server ending the session, e.g. access revoked)
+                if (msg.startsWith("Connection failed") || msg.startsWith("Disconnected:")) {
                     Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
                 }
                 updateConnectionUI(msg.contains("Connected") || msg.contains("Connecting"))
@@ -67,6 +85,9 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
             // Handle session-specific info updates
             if (intent?.action == "vpn_status_update") {
+                // The tunnel is up. Also covers the first connect: returning from the system
+                // VPN-consent dialog runs onResume() before the handshake ends, and that resets the ring.
+                updateConnectionUI(true)
                 infoPanel.visibility = View.VISIBLE
                 statsRow.visibility = View.VISIBLE
                 tvAssignedIp.text = intent.getStringExtra("ip") ?: "0.0.0.0"
@@ -75,6 +96,10 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
                 val mtu = intent.getIntExtra("mtu", 1320)
                 val mss = intent.getIntExtra("mss", 1160)
                 tvActiveMss.text = "$mtu (MSS: $mss)"
+                tvSecurity.text = intent.getStringExtra("security")?.ifBlank { null } ?: "N/A"
+                intent.getStringExtra("server")?.takeIf { it.isNotBlank() }?.let {
+                    statusBannerText.text = "Connected to $it"
+                }
             }
         }
     }
@@ -107,10 +132,20 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         tvAssignedIp = view.findViewById(R.id.tv_assigned_ip)
         tvActiveMss = view.findViewById(R.id.tv_active_mss)
         tvSessionId = view.findViewById(R.id.tv_session_id)
+        tvSecurity = view.findViewById(R.id.tv_security)
 
         // Auth gate
         authGateLayout = view.findViewById(R.id.ll_auth_gate)
         btnGoSignIn = view.findViewById(R.id.btn_go_sign_in)
+
+        // Access gate
+        accessGateLayout = view.findViewById(R.id.ll_access_gate)
+        tvAccessGateText = view.findViewById(R.id.tv_access_gate_text)
+        btnGoProfile = view.findViewById(R.id.btn_go_profile)
+
+        tvServerNode = view.findViewById(R.id.tv_server_node)
+        tvServerDetail = view.findViewById(R.id.tv_server_detail)
+        accessStore = AccessStore(requireContext())
 
         // Server input
         serverIpInput = view.findViewById(R.id.et_server_ip)
@@ -122,10 +157,17 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         btnGoSignIn.setOnClickListener {
             (activity as? MainActivity)?.navigateToProfile()
         }
+        btnGoProfile.setOnClickListener {
+            (activity as? MainActivity)?.navigateToProfile()
+        }
 
-        // Spinner: when user picks a saved server, fill the EditText
+        // Spinner: legacy v1 fills the IP field with a saved server; v2 picks a node of the access
         spinnerServers.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (!legacyV1) {
+                    nodes.getOrNull(pos)?.let { selectNode(it) }
+                    return
+                }
                 val selected = parent?.getItemAtPosition(pos)?.toString() ?: return
                 if (selected != getString(R.string.select_server_hint)) {
                     serverIpInput.setText(selected)
@@ -134,8 +176,9 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
-        updateAuthState()
+        refreshServerCard()
         restoreVpnState()
+        updateAuthState()
     }
 
     override fun onResume() {
@@ -147,9 +190,9 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         LocalBroadcastManager.getInstance(requireContext())
             .registerReceiver(vpnStatusReceiver, filter)
 
-        updateAuthState()
+        refreshServerCard()
         restoreVpnState()
-        populateServerSpinner()
+        updateAuthState()
     }
 
     override fun onPause() {
@@ -171,10 +214,10 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             connectLabel.setTextColor(ContextCompat.getColor(requireContext(), R.color.primaryDark))
             statusTextView.visibility = View.GONE
             statusBanner.visibility = View.VISIBLE
-            val serverIp = serverIpInput.text.toString().trim().ifEmpty { "server" }
-            statusBannerText.text = "Connected to $serverIp"
+            statusBannerText.text = "Connected to ${currentServerName().ifEmpty { "server" }}"
             disconnectBtn.visibility = View.VISIBLE
             connectBtn.isClickable = false
+            spinnerServers.isEnabled = false
         } else {
             // Disconnected: gray ring, white fill, power icon
             connectRingOuter.setBackgroundResource(R.drawable.ring_disconnected)
@@ -189,8 +232,15 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             statusBanner.visibility = View.GONE
             disconnectBtn.visibility = View.GONE
             connectBtn.isClickable = true
+            spinnerServers.isEnabled = true
         }
     }
+
+    /** Server shown in the banner: what the service connected to, else what is selected here. */
+    private fun currentServerName(): String =
+        MyVpnService.activeServerName.ifBlank {
+            if (legacyV1) serverIpInput.text.toString().trim() else accessStore.selectedNode()?.id ?: ""
+        }
 
     // ── State Restoration ───────────────────────────────────────
 
@@ -205,6 +255,7 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
             tvAssignedIp.text = MyVpnService.activeIpStr.ifBlank { "0.0.0.0" }
             tvSessionId.text = MyVpnService.activeSessionId.ifBlank { "N/A" }
             tvActiveMss.text = "${MyVpnService.activeMtu} (MSS: ${MyVpnService.activeMss})"
+            tvSecurity.text = MyVpnService.activeSecurity.ifBlank { "N/A" }
         } else {
             // Only reset if we're not already showing a "Disconnecting..." state
             if (statusTextView.text != getString(R.string.vpn_disconnecting)) {
@@ -215,7 +266,55 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         }
     }
 
-    // ── Saved Server Spinner ────────────────────────────────────
+    // ── Server Card ─────────────────────────────────────────────
+
+    /** Legacy v1: typed IP + saved servers. v2: the nodes of the imported access. */
+    private fun refreshServerCard() {
+        legacyV1 = VpnSettingsFragment.isLegacyV1(requireContext())
+        if (legacyV1) {
+            nodes = emptyList()
+            serverIpInput.visibility = View.VISIBLE
+            tvServerNode.visibility = View.GONE
+            tvServerDetail.visibility = View.GONE
+            populateServerSpinner()
+            return
+        }
+
+        serverIpInput.visibility = View.GONE
+        tvServerNode.visibility = View.VISIBLE
+        nodes = accessStore.bundle()?.nodes ?: emptyList()
+        val node = accessStore.selectedNode()
+        if (node == null) {
+            tvServerNode.text = getString(R.string.access_none_title)
+            tvServerDetail.visibility = View.GONE
+        } else {
+            showNode(node)
+        }
+
+        // Spinner only when the access covers more than one server
+        if (nodes.size > 1) {
+            val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, nodes.map { it.id })
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            spinnerServers.adapter = adapter
+            spinnerServers.setSelection(nodes.indexOfFirst { it.id == node?.id }.coerceAtLeast(0), false)
+            spinnerServers.visibility = View.VISIBLE
+        } else {
+            spinnerServers.visibility = View.GONE
+        }
+    }
+
+    private fun showNode(node: BundleNode) {
+        tvServerNode.text = node.id
+        tvServerDetail.text = "${node.host}:${node.port}"
+        tvServerDetail.visibility = View.VISIBLE
+    }
+
+    private fun selectNode(node: BundleNode) {
+        if (accessStore.selectedNodeId != node.id) accessStore.selectedNodeId = node.id
+        showNode(node)
+    }
+
+    // ── Saved Server Spinner (legacy v1) ────────────────────────
 
     private fun populateServerSpinner() {
         val prefs = requireContext().getSharedPreferences(
@@ -239,11 +338,14 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
 
     private fun updateAuthState() {
         val signedIn = (activity as? MainActivity)?.isUserSignedIn() == true
+        val accessProblem = if (signedIn && !legacyV1) accessProblem() else null
+        accessGateLayout.visibility = if (accessProblem != null) View.VISIBLE else View.GONE
+        accessProblem?.let { tvAccessGateText.text = it }
         if (signedIn) {
             authGateLayout.visibility = View.GONE
             // Don't override button state if VPN is already running
             if (!MyVpnService.isActive) {
-                connectBtn.isClickable = true
+                connectBtn.isClickable = accessProblem == null
             }
         } else {
             authGateLayout.visibility = View.VISIBLE
@@ -252,13 +354,30 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
         }
     }
 
+    /** Why a v2 connect cannot start, or null when the imported access is usable. */
+    private fun accessProblem(): String? {
+        val bundle = accessStore.bundle()
+        if (bundle == null || !accessStore.hasAccess()) return getString(R.string.vpn_access_required)
+        val info = bundle.ticketInfo
+        if (info.isExpired()) return getString(R.string.vpn_access_expired, AccessStore.formatDate(info.exp))
+        return null
+    }
+
     // ── VPN Controls ────────────────────────────────────────────
 
     private fun requestVpnPermission() {
-        val serverIp = serverIpInput.text.toString().trim()
-        if (serverIp.isEmpty()) {
-            Toast.makeText(requireContext(), "Enter server IP", Toast.LENGTH_SHORT).show()
-            return
+        if (legacyV1) {
+            val serverIp = serverIpInput.text.toString().trim()
+            if (serverIp.isEmpty()) {
+                Toast.makeText(requireContext(), "Enter server IP", Toast.LENGTH_SHORT).show()
+                return
+            }
+        } else {
+            accessProblem()?.let {
+                Toast.makeText(requireContext(), it, Toast.LENGTH_SHORT).show()
+                updateAuthState()
+                return
+            }
         }
 
         val intent = VpnService.prepare(requireContext())
@@ -267,10 +386,13 @@ class VPNFragment : Fragment(R.layout.fragment_vpn) {
     }
 
     private fun startVpn() {
-        val serverIp = serverIpInput.text.toString().trim()
-
         val intent = Intent(requireContext(), MyVpnService::class.java)
-        intent.putExtra("server_ip", serverIp)
+        if (legacyV1) {
+            intent.putExtra("server_ip", serverIpInput.text.toString().trim())
+        } else {
+            intent.putExtra(MyVpnService.EXTRA_PROTOCOL, "v2")
+            intent.putExtra(MyVpnService.EXTRA_NODE_ID, accessStore.selectedNode()?.id)
+        }
         requireContext().startService(intent)
 
         statusTextView.text = getString(R.string.vpn_connecting)

@@ -7,11 +7,105 @@ NetSpeed is a custom VPN system with:
 - **C++ VPN server** (Cpp-VPN-Core) at `C:\Users\shive\Documents\GitHub\Cpp-VPN-Core\`
 - **Terraform infrastructure** (GCP) at `C:\Users\shive\Documents\GitHub\vpn-infra\`
 
-The app uses a custom UDP protocol (port 5555) with XOR cipher + Diffie-Hellman key exchange, a TUN device on both ends, and foreground services on Android.
+The app speaks **protocol v2** (M6): a Noise IK handshake (X25519, BLAKE2b) and ChaCha20-Poly1305 over UDP, admitted by a signed ticket from an access link (`cppvpn://import?b=...`, made by `vpnctl` on the server side). The old protocol v1 (XOR cipher + toy Diffie-Hellman, typed server IP) is kept only as a developer option (Settings > Legacy server). Both use a TUN device on both ends and a foreground service on Android.
+
+The protocol and ticket designs live in the server repo: [design 01 cipher layer](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/design/01-cipher-layer.md), [design 02 handshake](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/design/02-handshake.md), [design 03 tickets](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/design/03-tickets.md), [milestone plan](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/plan/implementation-plan.md).
 
 ---
 
-## Current State Audit
+## M6 — Protocol v2 and access links (2026-11-09)
+
+### Components
+
+```
+ Profile tab                       VPN tab                          Settings tab
+ ┌──────────────────────────┐      ┌───────────────────────────┐    ┌──────────────────────────┐
+ │ VPN ACCESS card          │      │ access gate (none/expired)│    │ Protocol: v2 / v1 text   │
+ │ [Scan QR] [Paste link]   │      │ server card: node + host  │    │ Legacy server (v1) switch│
+ │ Remove access            │      │ node spinner (>1 node)    │    └────────────┬─────────────┘
+ │ Saved servers (v1 only)  │      │ Security row              │                 │ vpn_settings_prefs
+ └────────────┬─────────────┘      └─────────────┬─────────────┘                 │ legacy_v1
+              │ AccessImportUi.confirmAndImport  │ startService(protocol=v2,     │
+              │ (also MainActivity deep link)    │              node_id)          │
+              ▼                                  ▼                               ▼
+ ┌──────────────────────────────┐      ┌───────────────────────────────────────────────────┐
+ │ vpn/AccessStore              │◀─────│ MyVpnService.vpnMainLoopV2                         │
+ │  vpn_access.xml: bundle      │      │  performHandshakeV2 (4 tries, 5 s + jitter)        │
+ │   (device key zeroed), node  │      │  uplink: TUN → sealData → UDP                      │
+ │  device_sk: AES-GCM wrapped  │      │  downlink: UDP → receive → TUN / ACK / BYE         │
+ │   by an AndroidKeyStore key  │      │  timer: keepalive 15 s, rekey 120 s, reject 180 s  │
+ └──────────────────────────────┘      └───────────────┬───────────────────────────────────┘
+                                                       │ vpn/V2Client (synchronized)
+                                       ┌───────────────┴───────────────────────────────────┐
+                                       │ vpn/Noise.kt     HandshakeIK, CipherState, HKDF    │
+                                       │ vpn/V2Wire.kt    header, mac1, TAI64N, payloads    │
+                                       │ vpn/SessionLock  ChaCha20-Poly1305 (cipher id 1)   │
+                                       │ vpn/ReplayWindow RFC 6479, 1984 counters           │
+                                       │ vpn/Bundle.kt    cppvpn:// bundle + ticket fields  │
+                                       └───────────────────────────────────────────────────┘
+                                         BouncyCastle bcprov-jdk18on 1.79 (pure Java)
+```
+
+### Connect sequence
+
+```
+ App (V2Client)                                                C++ node (protocol/v2/Server)
+   │ HS_INIT  ver 0x20 · sender_idx · e · enc(s) · enc(payload1) · mac1     │
+   │   payload1 = TAI64N ‖ cipher offer [1] ‖ ticket (136 B)                │
+   │──────────────────────────────────────────────────────────────────────▶│ mac1, ts, ticket checks
+   │ HS_RESP 97 B: receiver_idx · e · enc(payload2: tun_ip, cipher, ka)    │
+   │◀──────────────────────────────────────────────────────────────────────│
+   │ ACK 38 B (transport, counter 0, payload = handshake_id)               │
+   │──────────────────────────────────────────────────────────────────────▶│ session confirmed
+   │ DATA / KEEPALIVE: 14 B header (AAD) ‖ AEAD(IP packet) ‖ 16 B tag       │
+   │◀─────────────────────────────────────────────────────────────────────▶│
+   │ rekey every 120 s (new HS_INIT, same tun_ip) · BYE on disconnect       │
+```
+
+### Decisions
+
+- **BouncyCastle instead of Lazysodium:** pure Java, so the Noise vectors and the live interop test run as JVM unit tests; no native `.so` (no 16 KB page-size work); no JNA call cost. Rationale in [design 01 §4](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/design/01-cipher-layer.md#android-crypto-library-bouncycastle-not-lazysodium-m6).
+- **Every import is confirmed:** a deep link can be opened by any web page or chat, so the dialog shows the servers and expiry first.
+- **Device key never leaves the phone in clear:** wrapped with an AES-256-GCM AndroidKeyStore key; `vpn_access.xml` is excluded from cloud backup and device transfer (a restored copy could not be unwrapped anyway).
+- **MTU 1420, MSS clamp 1380, /32 address**, DNS 8.8.8.8 (server-pushed settings are parked as P6 in the server repo).
+- **The server ending the session** (BYE, e.g. access revoked) disconnects with a toast that says so.
+
+### Tests (`app/src/test/.../vpn/`)
+
+| Test | Checks |
+|---|---|
+| `NoiseTest` | HMAC/HKDF values; the cacophony and snow `Noise_IK_25519_ChaChaPoly_BLAKE2b` vectors (copy of the server repo's vector file in `src/test/resources`); tampering; low-order keys |
+| `V2Test` | wire sizes (HS_INIT 150 B, 286 B with a ticket), little-endian header, TAI64N, mac1, replay window against a reference model, a real `vpnctl` bundle, malformed bundles, base64url |
+| `CrossImplementationTest` | with `CPPVPN_E2E_BUNDLE=<bundle file>`: live handshake with the C++ node, ICMP echo through the tunnel, rekey, BYE. Skipped otherwise |
+
+```
+$env:JAVA_HOME="C:\Program Files\Java\jdk-17"; .\gradlew.bat testDebugUnitTest
+$env:CPPVPN_E2E_BUNDLE="C:\path\bundle.txt"; .\gradlew.bat testDebugUnitTest --tests '*CrossImplementationTest*'
+```
+
+### Emulator test (2026-11-09)
+
+Docker node in ticket mode (`vpnctl` bundle with nodes `docker-local` 127.0.0.1 and `emulator-host` 10.0.2.2), AVD Medium_Tablet (API 35, 16 KB pages):
+
+| Step | Result |
+|---|---|
+| Deep link → confirm → import | Stored; device key wrapped; VPN tab reloads |
+| Connect to `emulator-host` | Handshake about 160 ms; IP 10.8.0.2; MTU 1420 / MSS 1380; ping 10.8.0.1 3/3 |
+| Rekey at 120 s | 14 ms; new session ID shown; ping still works |
+| Node restarted | App disconnects after 45 s of silence |
+| `vpnctl revoke` | Disconnected about 1 s later: "the server ended the session (access revoked…)" |
+| Reconnect with the revoked ticket | Node: `reason=revoked` ×4; app: "Connection failed: no answer…" |
+| `docker-local` (127.0.0.1 = the emulator itself) | 4 tries, then "Connection failed" |
+| Paste link (new ticket) | Confirm says it replaces the current access; connects |
+| Remove access while connected | Tunnel ends (BYE), prefs cleared, access gate shown |
+| Legacy v1 switch | IP field + saved servers back; v1 connect + ping work |
+| Scan QR | Camera permission prompt, then the scanner; Back returns to Profile |
+
+The emulator has no Google account, so the connect steps ran on a local build without the sign-in check (reverted, never committed).
+
+---
+
+## Current State Audit (before M6)
 
 ### What is FULLY working end-to-end:
 - VPN connect/disconnect with handshake (HELLO → WELCOME → CLIENT_ACK → DATA)
@@ -321,6 +415,8 @@ jobs:
 
 These are NOT blocking for launch but should be on the roadmap:
 
+Items 1–4 are done by protocol v2 (M6): ChaCha20-Poly1305 instead of AES-GCM, X25519 in Noise IK, the server's static key pinned in the access link, and a replay window. Item 5 is mac1 on the node; mac2 cookies are parked (P3 in the server repo).
+
 1. **Replace XOR cipher with AES-256-GCM** — The current XOR cipher is trivially breakable. Use OpenSSL's EVP API on the server and `javax.crypto.Cipher` on Android. The DH key exchange already produces a shared secret — derive a proper AES key from it using HKDF.
 
 2. **Replace toy DH with proper ECDH** — Current DH uses P=127, G=9 which has only ~126 possible shared secrets. Use Curve25519 (libsodium on server, Tink or BouncyCastle on Android).
@@ -354,8 +450,17 @@ app/src/main/java/org/thinkSlow/netspeedv3/
 ├── SpeedFragment.kt          — Speed cards, data usage, notification toggle
 ├── VpnSettingsFragment.kt    — Split tunneling, kill switch, auto-connect, protocol
 ├── ProfileFragment.kt        — Google Sign-In, saved servers, theme toggle
-├── MyVpnService.kt           — VPN service (handshake, TUN, uplink/downlink/keepalive threads)
-└── NetworkSpeedService.kt    — Speed monitoring foreground service (TrafficStats)
+├── MyVpnService.kt           — VPN service: vpnMainLoopV2 (v2) and vpnMainLoop (legacy v1)
+├── AccessImportUi.kt         — confirm-then-import for deep links, pasted links, QR codes
+├── NetworkSpeedService.kt    — Speed monitoring foreground service (TrafficStats)
+└── vpn/                      — protocol v2 (no Android UI code)
+    ├── Noise.kt              — NoiseCrypto, CipherState, SymmetricState, HandshakeIK
+    ├── V2Wire.kt             — wire constants, header, mac1, TAI64N, payload codecs
+    ├── V2Client.kt           — initiator state machine: handshake, seal/open, rekey
+    ├── SessionLock.kt        — AEAD interface + ChaCha20-Poly1305
+    ├── ReplayWindow.kt       — RFC 6479 window (1984 counters)
+    ├── Bundle.kt             — cppvpn:// bundle, ticket fields, base64url
+    └── AccessStore.kt        — Keystore-wrapped storage + AccessImport
 ```
 
 ### Protocol Packet Types
@@ -368,6 +473,8 @@ app/src/main/java/org/thinkSlow/netspeedv3/
 | PKT_BYE | 5 | Client → Server | Graceful disconnect (sent 3x) |
 | PKT_KEEPALIVE | 6 | Client → Server | Prevent session timeout (every 15s) |
 
+Protocol v2 (M6, first byte `0x20`): `HS_INIT` 1, `HS_RESP` 2, then transport types `ACK`, `DATA`, `KEEPALIVE`, `BYE` with a 14-byte header (`ver, type, receiver_idx u32 LE, counter u64 LE`). Layouts: [design 02 §3](https://github.com/shivesh1606/Cpp-VPN-Core/blob/master/docs/design/02-handshake.md).
+
 ### Key SharedPreferences
 | Prefs File | Key | Type | Used By |
 |------------|-----|------|---------|
@@ -378,6 +485,10 @@ app/src/main/java/org/thinkSlow/netspeedv3/
 | `vpn_settings_prefs` | `excluded_apps` | StringSet | VpnSettingsFragment, MyVpnService |
 | `vpn_settings_prefs` | `kill_switch` | Boolean | VpnSettingsFragment, MyVpnService (TODO) |
 | `vpn_settings_prefs` | `auto_connect` | Boolean | VpnSettingsFragment, VPNFragment (TODO) |
+| `vpn_settings_prefs` | `legacy_v1` | Boolean | VpnSettingsFragment, VPNFragment, ProfileFragment |
+| `vpn_access` | `bundle` | String (base64url bundle, device key zeroed) | AccessStore |
+| `vpn_access` | `device_key` | String (base64url: IV ‖ AES-GCM(device_sk)) | AccessStore |
+| `vpn_access` | `selected_node` | String (node id) | AccessStore, VPNFragment |
 
 ### Server (C++) Key Files
 ```

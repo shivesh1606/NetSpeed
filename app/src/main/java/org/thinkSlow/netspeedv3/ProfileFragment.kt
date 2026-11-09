@@ -1,5 +1,6 @@
 package org.thinkSlow.netspeedv3
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -13,6 +14,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -23,6 +25,10 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.switchmaterial.SwitchMaterial
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.thinkSlow.netspeedv3.vpn.AccessImport
+import org.thinkSlow.netspeedv3.vpn.AccessStore
 
 class ProfileFragment : Fragment(R.layout.fragment_profile) {
 
@@ -50,10 +56,24 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
     private lateinit var switchTheme: SwitchMaterial
     private lateinit var switchAutoNotif: SwitchMaterial
 
-    // Saved servers
+    // VPN access (imported bundle)
+    private lateinit var tvAccessTitle: TextView
+    private lateinit var tvAccessDetail: TextView
+    private lateinit var btnScanAccess: MaterialButton
+    private lateinit var btnPasteAccess: MaterialButton
+    private lateinit var btnRemoveAccess: MaterialButton
+
+    // Saved servers (legacy v1 only)
+    private lateinit var llSavedServersSection: LinearLayout
     private lateinit var etAddServer: EditText
     private lateinit var btnAddServer: MaterialButton
     private lateinit var llServerList: LinearLayout
+
+    /** QR scanner (zxing-android-embedded); it asks for the camera permission itself. */
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val text = result.contents ?: return@registerForActivityResult // cancelled
+        AccessImportUi.confirmAndImport(requireContext(), text) { refreshAccess() }
+    }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -79,7 +99,19 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
         switchTheme = view.findViewById(R.id.switch_theme)
         switchAutoNotif = view.findViewById(R.id.switch_auto_notif)
 
+        // VPN access views
+        tvAccessTitle = view.findViewById(R.id.tv_access_title)
+        tvAccessDetail = view.findViewById(R.id.tv_access_detail)
+        btnScanAccess = view.findViewById(R.id.btn_scan_access)
+        btnPasteAccess = view.findViewById(R.id.btn_paste_access)
+        btnRemoveAccess = view.findViewById(R.id.btn_remove_access)
+
+        btnScanAccess.setOnClickListener { scanQr() }
+        btnPasteAccess.setOnClickListener { showPasteDialog() }
+        btnRemoveAccess.setOnClickListener { confirmRemoveAccess() }
+
         // Saved servers views
+        llSavedServersSection = view.findViewById(R.id.ll_saved_servers_section)
         etAddServer = view.findViewById(R.id.et_add_server)
         btnAddServer = view.findViewById(R.id.btn_add_server)
         llServerList = view.findViewById(R.id.ll_server_list)
@@ -114,11 +146,91 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             prefs.edit().putBoolean(KEY_AUTO_NOTIF, checked).apply()
         }
 
-        // Populate saved server list
+        // Populate VPN access and saved server list
+        refreshAccess()
         refreshServerList()
 
         // Check current sign-in state
         updateUI(GoogleSignIn.getLastSignedInAccount(requireContext()))
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshAccess()
+    }
+
+    // ── VPN Access ─────────────────────────────────────────────
+
+    private fun refreshAccess() {
+        val ctx = requireContext()
+        val store = AccessStore(ctx)
+        val bundle = if (store.hasAccess()) store.bundle() else null
+        if (bundle == null) {
+            tvAccessTitle.setText(R.string.access_none_title)
+            tvAccessDetail.setText(R.string.access_none_desc)
+            tvAccessDetail.setTextColor(ContextCompat.getColor(ctx, R.color.textTertiary))
+            btnRemoveAccess.visibility = View.GONE
+        } else {
+            val expired = bundle.ticketInfo.isExpired()
+            tvAccessTitle.setText(if (expired) R.string.access_expired_title else R.string.access_imported_title)
+            tvAccessDetail.text = AccessImport.summary(bundle)
+            tvAccessDetail.setTextColor(ContextCompat.getColor(ctx, if (expired) R.color.danger else R.color.textTertiary))
+            btnRemoveAccess.visibility = View.VISIBLE
+        }
+        // Typed-IP servers only matter for the legacy v1 protocol (Settings > Legacy server)
+        llSavedServersSection.visibility = if (VpnSettingsFragment.isLegacyV1(ctx)) View.VISIBLE else View.GONE
+    }
+
+    private fun scanQr() {
+        scanLauncher.launch(
+            ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt(getString(R.string.scan_prompt))
+                .setBeepEnabled(false)
+                .setOrientationLocked(false)
+        )
+    }
+
+    private fun showPasteDialog() {
+        val ctx = requireContext()
+        val body = layoutInflater.inflate(R.layout.dialog_paste_access, null)
+        val input = body.findViewById<EditText>(R.id.et_access_link)
+        clipboardAccessLink()?.let { input.setText(it) }
+        AlertDialog.Builder(ctx)
+            .setTitle(R.string.paste_link_title)
+            .setView(body)
+            .setPositiveButton(R.string.import_access) { _, _ ->
+                AccessImportUi.confirmAndImport(ctx, input.text.toString()) { refreshAccess() }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Pre-fills the paste dialog when the clipboard already holds an access link. */
+    private fun clipboardAccessLink(): String? {
+        val cm = requireContext().getSystemService(ClipboardManager::class.java) ?: return null
+        val clip = cm.primaryClip ?: return null
+        if (clip.itemCount == 0) return null
+        val text = clip.getItemAt(0).coerceToText(requireContext())?.toString()?.trim() ?: return null
+        return text.takeIf { it.startsWith(org.thinkSlow.netspeedv3.vpn.Bundle.URI_PREFIX) }
+    }
+
+    private fun confirmRemoveAccess() {
+        val ctx = requireContext()
+        AlertDialog.Builder(ctx)
+            .setTitle(R.string.remove_access)
+            .setMessage(R.string.remove_access_confirm)
+            .setPositiveButton(R.string.remove) { _, _ ->
+                // A v2 tunnel runs on this access: end it instead of leaving it up without one
+                if (MyVpnService.isActive && !VpnSettingsFragment.isLegacyV1(ctx)) {
+                    ctx.startService(Intent(ctx, MyVpnService::class.java).setAction(MyVpnService.ACTION_STOP))
+                }
+                AccessStore(ctx).clear()
+                refreshAccess()
+                Toast.makeText(ctx, "VPN access removed", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     // ── Saved Servers ──────────────────────────────────────────

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paste-link dialog body; the field uses the same style as et_add_server (Profile) -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingHorizontal="20dp"
+    android:paddingTop="8dp">
+
+    <EditText
+        android:id="@+id/et_access_link"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="44dp"
+        android:maxLines="4"
+        android:hint="@string/paste_link_hint"
+        android:inputType="textUri|textMultiLine|textNoSuggestions"
+        android:importantForAutofill="no"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="10dp"
+        android:textSize="13sp"
+        android:background="@drawable/bg_input_rounded"
+        android:textColor="?colorOnSurface"
+        android:textColorHint="@color/textHint" />
+</FrameLayout>

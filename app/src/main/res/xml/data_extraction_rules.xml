@@ -5,15 +5,10 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- VPN access: device key wrapped by a device-bound Keystore key; useless elsewhere -->
+        <exclude domain="sharedpref" path="vpn_access.xml" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="vpn_access.xml" />
     </device-transfer>
-    -->
 </data-extraction-rules>

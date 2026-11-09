@@ -73,6 +73,34 @@
     <string name="data_down_format">%s down</string>
     <string name="data_up_format">%s up</string>
 
+    <!-- VPN access (protocol v2 + tickets) -->
+    <string name="vpn_access_header">VPN access</string>
+    <string name="access_none_title">No access yet</string>
+    <string name="access_none_desc">Scan the QR code or paste the link you received</string>
+    <string name="access_imported_title">Access imported</string>
+    <string name="scan_qr">Scan QR</string>
+    <string name="paste_link">Paste link</string>
+    <string name="remove_access">Remove access</string>
+    <string name="import_access">Import</string>
+    <string name="remove">Remove</string>
+    <string name="cancel">Cancel</string>
+    <string name="paste_link_title">Paste access link</string>
+    <string name="paste_link_hint">cppvpn://import?b=…</string>
+    <string name="import_confirm_title">Import VPN access?</string>
+    <string name="import_confirm_msg">This link gives this phone access to %1$s. Only accept links from someone you trust.</string>
+    <string name="import_replaces">It replaces the access already on this phone.</string>
+    <string name="access_expired_title">Access expired</string>
+    <string name="remove_access_confirm">Remove the VPN access from this phone? You will need a new link to connect again.</string>
+    <string name="scan_prompt">Scan the access QR code</string>
+    <string name="vpn_access_required">Import your VPN access to connect</string>
+    <string name="vpn_access_expired">Your VPN access expired on %1$s</string>
+    <string name="go_to_profile">Go to Profile</string>
+    <string name="label_security">Security</string>
+    <string name="legacy_v1">Legacy server (v1)</string>
+    <string name="legacy_v1_desc">Connect by IP without encryption (testing only)</string>
+    <string name="protocol_desc_v2">Noise IK · ChaCha20-Poly1305 over UDP</string>
+    <string name="protocol_desc_v1">Legacy v1 · XOR, not encrypted</string>
+
     <!-- Nav -->
     <string name="nav_settings">Settings</string>
 
