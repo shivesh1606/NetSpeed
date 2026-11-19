@@ -29,9 +29,10 @@ object AccessImportUi {
             return
         }
 
-        val servers = if (bundle.nodes.size == 1) "1 server" else "${bundle.nodes.size} servers"
-        val grant = "$servers (${bundle.nodes.joinToString(", ") { it.id }}), valid until ${AccessStore.formatDate(info.exp)}"
-        var message = context.getString(R.string.import_confirm_msg, grant)
+        // Show where the traffic will go (host:port and the start of each node key), not just the
+        // node ids: those are chosen by whoever made the link.
+        var message = context.getString(R.string.import_confirm_msg, bundle.destinations(),
+                                        AccessStore.formatDate(info.exp))
         if (AccessStore(context).hasAccess()) message += "\n\n" + context.getString(R.string.import_replaces)
 
         AlertDialog.Builder(context)

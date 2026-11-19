@@ -139,27 +139,41 @@ The emulator has no Google account, so the connect steps ran on a local build wi
 **Files to modify:**
 - `app/src/main/java/org/thinkSlow/netspeedv3/MyVpnService.kt`
 
-**Implementation:**
-1. In `createTun()`, read the kill switch preference:
-```kotlin
-val killSwitchEnabled = settingsPrefs.getBoolean(
-    VpnSettingsFragment.KEY_KILL_SWITCH, false
-)
-```
-2. If kill switch is ON, set `builder.setBlocking(true)` — this tells Android's VPN framework to block traffic when the VPN interface goes down
-3. Additionally, add `builder.allowBypass(false)` when kill switch is ON to prevent apps from bypassing the VPN using `ConnectivityManager.bindProcessToNetwork()`
-4. In `disconnectVpn()`, if the disconnect was NOT user-initiated (i.e., triggered by a network error in `vpnMainLoop`), DON'T close the TUN interface — leave it open so traffic stays blocked. Only close TUN on explicit user disconnect via `ACTION_STOP`.
+**Corrected 2026-11-19.** An earlier version of this section proposed `builder.setBlocking(true)` and `builder.allowBypass(false)`. Neither blocks traffic:
 
-**How to distinguish user disconnect vs crash:**
-- Add a boolean `userInitiatedStop` flag
-- Set it to `true` in `onStartCommand` when `action == ACTION_STOP`
-- In the `finally` block of `vpnMainLoop`, check this flag before calling `disconnectVpn()`
+- `VpnService.Builder.setBlocking(true)` only puts the TUN file descriptor into blocking I/O mode. The uplink already waits in `Os.poll()`, so it changes nothing.
+- `allowBypass()` takes no argument and *enables* bypass. Bypass is already off by default, so leave it uncalled.
+
+Traffic is blocked only while a TUN interface with the `0.0.0.0/0` route is established and nothing forwards it. Today `disconnectVpn()` closes the TUN on every disconnect, so after an unexpected drop traffic leaks out of the normal network.
+
+```
+ connected     drop (server gone, BYE, 3×keepalive silence, rekey failed)        user taps Disconnect
+ ──TUN up──────X─────────────── TUN kept up, no session: packets go nowhere ─────────▶ TUN closed
+               └─ reconnect loop: new handshake (v2) / HELLO (v1), same TUN when the IP matches
+```
+
+**Implementation:**
+1. Read `VpnSettingsFragment.KEY_KILL_SWITCH` when a connection starts.
+2. In `vpnMainLoop` / `vpnMainLoopV2`, an unexpected end with the kill switch ON keeps the TUN interface (`tunInterface`) and the foreground notification, and retries the handshake with backoff instead of calling `disconnectVpn()`.
+   - Today the unexpected ends are: socket errors, server BYE, the silence timeout, and a rekey failing before 180 s.
+   - While no session exists, the uplink keeps reading and dropping packets.
+   - If the new handshake assigns a different IP (v1, or a new v2 peer), rebuild the TUN with `Builder.establish()` before closing the old one, so there is no gap.
+3. Close the TUN only on `ACTION_STOP` (user disconnect), on revoked or expired access, or when VPN permission is revoked (`onRevoke()`).
+4. **Process death and reboot:** an app cannot block traffic once its process is gone. Only the system setting does: Settings → Network & internet → VPN → this app → *Always-on VPN* + *Block connections without VPN*.
+   - When the kill switch is turned on, explain this and open `Settings.ACTION_VPN_SETTINGS`.
+   - `VpnService.isAlwaysOn()` / `isLockdownEnabled()` (API 29+) tell the service whether the user did it, so the Settings row can show the state.
+
+**How to distinguish user disconnect vs failure:**
+- Add a `userInitiatedStop` flag, set in `onStartCommand` when `action == ACTION_STOP`.
+- In the `finally` block of both main loops, check it before tearing the TUN down.
 
 **Testing:**
-- Enable kill switch, connect VPN, then kill the server process on GCP
-- Verify that the phone shows no internet (browser should fail to load pages)
-- Open the app, tap Disconnect — internet should restore
-- With kill switch OFF, repeat — internet should continue working even when VPN drops
+- Kill switch ON: connect, stop the node (`docker stop` / `systemctl stop vpn-server`).
+  - The browser must fail to load pages while the app shows "Reconnecting".
+  - Start the node again: traffic resumes without user action.
+- Kill switch ON: tap Disconnect. Internet must come back immediately.
+- Kill switch OFF: stop the node. The tunnel is torn down and traffic uses the normal network (current behaviour).
+- Always-on + lockdown set in system settings: force-stop the app. There must be no internet until the VPN is back (enforced by Android, not the app).
 
 ---
 

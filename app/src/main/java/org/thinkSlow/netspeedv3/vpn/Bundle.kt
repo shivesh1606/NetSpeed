@@ -7,11 +7,21 @@ package org.thinkSlow.netspeedv3.vpn
  *   node      = id_len u8 | id | host_len u8 | host | port u16 LE | S_pub 32 | tags u32 LE
  * It contains the device private key: treat it as a secret.
  */
-class BundleNode(val id: String, val host: String, val port: Int, val pub: ByteArray, val tags: Int)
+class BundleNode(val id: String, val host: String, val port: Int, val pub: ByteArray, val tags: Int) {
+    /** First 8 characters of the node key S_pub (base64url), as printed by `vpn_server --pubkey`. */
+    val keyFingerprint: String get() = Base64Url.encode(pub).take(8)
+}
 
 class Bundle(val nodes: List<BundleNode>, val deviceSk: ByteArray, val ticket: ByteArray) {
     /** Ticket fields the app shows (design 03 §2 layout; the node verifies the signature). */
     val ticketInfo: TicketInfo get() = TicketInfo.parse(ticket)
+
+    /**
+     * One line per node for the import dialog: where the traffic goes and the start of the node key.
+     * Node ids are chosen by whoever made the link, so on their own they prove nothing.
+     */
+    fun destinations(): String =
+        nodes.joinToString("\n") { "• ${it.id}: ${it.host}:${it.port} (key ${it.keyFingerprint})" }
 
     /** Same bundle with the device key zeroed, for storage next to the Keystore-wrapped key. */
     fun withoutDeviceKey() = Bundle(nodes, ByteArray(32), ticket)
@@ -21,6 +31,10 @@ class Bundle(val nodes: List<BundleNode>, val deviceSk: ByteArray, val ticket: B
         private const val VERSION = 1
         private const val TICKET_LEN = 136
         private const val MAX_NODES = 32
+
+        /** Node id / host characters (auth::validNodeId / validNodeHost in Cpp-VPN-Core): plain ASCII
+         *  only, so a crafted link cannot fake lines or lookalike names in the import dialog. */
+        private val PLAIN_NAME = Regex("[A-Za-z0-9_.-]+")
 
         class FormatException(msg: String) : Exception(msg)
 
@@ -45,9 +59,11 @@ class Bundle(val nodes: List<BundleNode>, val deviceSk: ByteArray, val ticket: B
                 need(1); val idLen = p[off++].toInt() and 0xff
                 if (idLen < 1 || idLen > 32) throw FormatException("Bad server name in the access link")
                 need(idLen); val id = String(p, off, idLen, Charsets.UTF_8); off += idLen
+                if (!PLAIN_NAME.matches(id)) throw FormatException("Bad server name in the access link")
                 need(1); val hostLen = p[off++].toInt() and 0xff
                 if (hostLen < 1 || hostLen > 253) throw FormatException("Bad server address in the access link")
                 need(hostLen); val host = String(p, off, hostLen, Charsets.UTF_8); off += hostLen
+                if (!PLAIN_NAME.matches(host)) throw FormatException("Bad server address in the access link")
                 need(2 + 32 + 4)
                 val port = V2Wire.getU16(p, off); off += 2
                 val pub = p.copyOfRange(off, off + 32); off += 32

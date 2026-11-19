@@ -87,7 +87,7 @@
     <string name="paste_link_title">Paste access link</string>
     <string name="paste_link_hint">cppvpn://import?b=…</string>
     <string name="import_confirm_title">Import VPN access?</string>
-    <string name="import_confirm_msg">This link gives this phone access to %1$s. Only accept links from someone you trust.</string>
+    <string name="import_confirm_msg">This phone\'s VPN traffic will go to:\n\n%1$s\n\nValid until %2$s. Only accept links from someone you trust.</string>
     <string name="import_replaces">It replaces the access already on this phone.</string>
     <string name="access_expired_title">Access expired</string>
     <string name="remove_access_confirm">Remove the VPN access from this phone? You will need a new link to connect again.</string>

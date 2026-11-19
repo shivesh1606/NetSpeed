@@ -125,6 +125,33 @@ class V2Test {
         assertArrayEquals(ByteArray(32), stripped.deviceSk)
     }
 
+    @Test fun importDialogShowsWhereTheTrafficGoes() {
+        val b = Bundle.fromText(vpnctlBundle)
+        assertEquals("NYK5lkNN", b.nodes[0].keyFingerprint) // = start of `vpn_server --pubkey` output
+        assertEquals("• in-1: 35.200.10.20:5555 (key NYK5lkNN)\n" +
+                     "• us-1: vpn-us.example.org:6000 (key Q6KPswus)", b.destinations())
+    }
+
+    /** The import dialog lists every node's id and host; anyone can craft a link, so those fields
+     *  must not carry line breaks, lookalikes or direction overrides (same rule as auth/Bundle.cpp). */
+    @Test fun rejectsNodeTextThatCouldFakeTheImportDialog() {
+        val good = Bundle.fromText(vpnctlBundle)
+        fun withNode(id: String, host: String) =
+            Bundle(listOf(BundleNode(id, host, 5555, good.nodes[0].pub, 1)), good.deviceSk, good.ticket).encode()
+        assertEquals("vpn-2.example.org", Bundle.decode(withNode("eu_2.backup", "vpn-2.example.org")).nodes[0].host)
+        for ((id, host) in listOf(
+            "in-1\n- in-2 35.200.10.20" to "203.0.113.9",
+            "in 1" to "35.200.10.20",
+            "in-é" to "35.200.10.20",
+            "in-1" to "203.0.113.9\n35.200.10.20",
+            "in-1" to "vpn.ex‮elpmaxe.org", // right-to-left override
+            "in-1" to "35.200.10.20:5555",
+        )) {
+            try { Bundle.decode(withNode(id, host)); fail("accepted id='$id' host='$host'") }
+            catch (e: Bundle.Companion.FormatException) { }
+        }
+    }
+
     @Test fun reimportKeepsTheSelectedNodeWhenItStillExists() {
         val nodes = Bundle.fromText(vpnctlBundle).nodes // in-1, us-1
         assertEquals("us-1", AccessStore.nodeAfterImport("us-1", nodes))
