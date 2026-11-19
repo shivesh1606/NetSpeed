@@ -12,8 +12,14 @@
     <!-- Allows internet communication for VPN -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
-    <!-- Required to query all installed apps (Android 11+) for split tunneling -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+    <!-- Split tunneling lists launcher apps only: this <queries> entry makes them visible on
+         Android 11+ without QUERY_ALL_PACKAGES (which Play requires a policy declaration for) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+        </intent>
+    </queries>
 
     <!-- Declare that our app *can* start a FGS on Android 14+ -->
     <uses-permission
