@@ -310,9 +310,14 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
     private fun showAppPicker() {
         val pm = requireContext().packageManager
 
-        // Get all installed apps (system + user)
+        // Apps with a launcher icon (the ones a user would exclude). Visible through the
+        // <queries> MAIN/LAUNCHER entry in the manifest: no QUERY_ALL_PACKAGES permission needed.
         val installedApps = try {
-            pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val launcher = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            pm.queryIntentActivities(launcher, 0)
+                .map { it.activityInfo.applicationInfo }
+                .distinctBy { it.packageName }
                 .filter { it.packageName != requireContext().packageName } // Exclude our app
                 .filter { it.packageName !in getExcludedApps() }           // Exclude already selected
                 .sortedBy { pm.getApplicationLabel(it).toString() }
