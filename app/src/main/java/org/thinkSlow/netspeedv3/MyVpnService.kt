@@ -20,12 +20,19 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import kotlin.experimental.xor
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import org.thinkSlow.netspeedv3.vpn.AccessStore
+import org.thinkSlow.netspeedv3.vpn.NoiseCrypto
+import java.util.concurrent.atomic.AtomicLong
+import org.thinkSlow.netspeedv3.vpn.SessionLocks
+import org.thinkSlow.netspeedv3.vpn.V2Client
+import org.thinkSlow.netspeedv3.vpn.V2Wire
 
 /* ============================================================
  *  PROTOCOL CONSTANTS (MUST MATCH C++)
@@ -55,6 +62,13 @@ private const val TCP_OPTION_END = 0
 private const val TCP_OPTION_NOP = 1
 
 private const val CLAMP_MSS = 1160
+
+/* Protocol v2 (Cpp-VPN-Core design docs 01-03): Noise IK handshake + ChaCha20-Poly1305 transport */
+private const val V2_MTU = 1420            // design 01 §3: 1500 - 20 - 8 - 14 - 16 - margin
+private const val V2_CLAMP_MSS = V2_MTU - 40
+private const val V2_REKEY_AFTER_MS = 120_000L  // design 02 §7
+private const val V2_REJECT_AFTER_MS = 180_000L
+private const val V2_RETRY_MS = 5_000L     // new HS_INIT every 5 s (+ jitter) until HS_RESP
 
 /* ============================================================
  *  PACKET HEADER (5 BYTES, PACKED)
@@ -251,6 +265,20 @@ class MyVpnService : VpnService() {
         @Volatile
         var activeMss: Int = CLAMP_MSS
             private set
+
+        /** "Noise IK · ChaCha20-Poly1305" (v2) or "XOR (legacy v1)" */
+        @Volatile
+        var activeSecurity: String = ""
+            private set
+
+        /** Node name (v2) or server IP (v1) shown in the "Connected to" banner */
+        @Volatile
+        var activeServerName: String = ""
+            private set
+
+        /** Intent extras for starting a v2 connection from the imported access */
+        const val EXTRA_PROTOCOL = "protocol"
+        const val EXTRA_NODE_ID = "node_id"
     }
     private val socketLock = ReentrantLock()
     @Volatile
@@ -272,6 +300,12 @@ class MyVpnService : VpnService() {
 
     /** Write end of the current session's wake pipe; a byte here pops the uplink out of poll() */
     private var wakeWriteFd: FileDescriptor? = null
+
+    // Protocol v2 state
+    private var protocolV2 = false
+    private var nodeId: String? = null
+    private var v2Client: V2Client? = null
+    private var currentMtu = DEFAULT_MTU
 
 
     // Helper to safely send through the shared socket
@@ -304,9 +338,11 @@ class MyVpnService : VpnService() {
     private fun broadcastVpnStatus(assignedIp: String) {
         val intent = Intent("vpn_status_update") // Changed from "VPN_UPDATE" to match Fragment
         intent.putExtra("ip", assignedIp)
-        intent.putExtra("mtu", DEFAULT_MTU)
+        intent.putExtra("mtu", currentMtu)
         intent.putExtra("mss", currentClampMss)
-        intent.putExtra("sid", currentSessionId.toUInt().toString())
+        intent.putExtra("sid", if (protocolV2) activeSessionId else currentSessionId.toUInt().toString())
+        intent.putExtra("security", activeSecurity)
+        intent.putExtra("server", activeServerName)
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
     private fun handleInboundPacket(pkt: ByteArray, len: Int, pktOffset: Int) {
@@ -327,7 +363,7 @@ class MyVpnService : VpnService() {
                 val nextHopMtu = ((pkt[icmpStart + 6].toInt() and 0xFF) shl 8) or
                         (pkt[icmpStart + 7].toInt() and 0xFF)
 
-                if (nextHopMtu in 576..DEFAULT_MTU) {
+                if (nextHopMtu in 576..currentMtu) {
                     updateVpnMtu(nextHopMtu)
                 }
             }
@@ -360,8 +396,10 @@ class MyVpnService : VpnService() {
             }
         }
 
+        protocolV2 = intent?.getStringExtra(EXTRA_PROTOCOL) == "v2"
+        nodeId = intent?.getStringExtra(EXTRA_NODE_ID)
         serverIp = intent?.getStringExtra("server_ip") ?: ""
-        if (serverIp.isEmpty()) {
+        if (!protocolV2 && serverIp.isEmpty()) {
             sendToast("Invalid server IP")
             stopSelf()
             return START_NOT_STICKY
@@ -373,7 +411,7 @@ class MyVpnService : VpnService() {
         if (activeSession.compareAndSet(null, session)) {
             Thread {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
-                vpnMainLoop(session)
+                if (protocolV2) vpnMainLoopV2(session) else vpnMainLoop(session)
             }.start()
         }
 
@@ -403,6 +441,8 @@ class MyVpnService : VpnService() {
                 globalSocket = sock
             }
             currentSessionId = 0
+            currentMtu = DEFAULT_MTU
+            currentClampMss = CLAMP_MSS
 
             val serverAddr = InetSocketAddress(serverIp, SERVER_PORT)
             serverAddress = serverAddr
@@ -428,6 +468,8 @@ class MyVpnService : VpnService() {
                 activeSessionId = currentSessionId.toUInt().toString()
                 activeMtu = DEFAULT_MTU
                 activeMss = currentClampMss
+                activeSecurity = "XOR (legacy v1, not encrypted)"
+                activeServerName = serverIp
             }
             broadcastVpnStatus(assignedIp)
 
@@ -665,13 +707,13 @@ class MyVpnService : VpnService() {
     /* ============================================================
      *  TUN CREATION
      * ============================================================ */
-    private fun createTun(ip: String): ParcelFileDescriptor {
+    private fun createTun(ip: String, prefix: Int = 24, mtu: Int = DEFAULT_MTU): ParcelFileDescriptor {
         val builder = Builder()
             .setSession("ThinkSlow VPN")
-            .addAddress(ip, 24)
+            .addAddress(ip, prefix)
             .addDnsServer("8.8.8.8")
             .addRoute("0.0.0.0", 0)
-            .setMtu(DEFAULT_MTU)
+            .setMtu(mtu)
 
         // Apply split tunneling — exclude selected apps from VPN
         val settingsPrefs = getSharedPreferences(
@@ -710,14 +752,23 @@ class MyVpnService : VpnService() {
     private fun disconnectVpn(session: Any, message: String = "VPN Disconnected") {
         socketLock.withLock {
             if (!activeSession.compareAndSet(session, null)) return
+            Log.i(TAG, "disconnect: $message")
             running = false
             isActive = false
             activeIpStr = ""
             activeSessionId = ""
 
+            activeSecurity = ""
+            activeServerName = ""
+
             // Best-effort: send PKT_BYE so the server frees our session.
             // Only if WELCOME gave us a session ID — otherwise the server has nothing to free.
             if (currentSessionId != 0) sendByePacket()
+            v2Client?.let { client ->
+                sendV2Bye(client) // authenticated BYE (protocol v2)
+                client.wipe()
+            }
+            v2Client = null
 
             // Closing the socket wakes any thread blocked in receive() (handshake or downlink)
             globalSocket?.close()
@@ -776,6 +827,250 @@ class MyVpnService : VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send BYE: ${e.message}")
         }
+    }
+
+    /** Protocol v2 BYE, sent 3x like the v1 one. Called with socketLock held. */
+    private fun sendV2Bye(client: V2Client) {
+        val addr = serverAddress ?: return
+        val sock = globalSocket ?: return
+        val buf = ByteArray(V2Wire.TRANSPORT_MIN_LEN)
+        val n = client.sealBye(System.currentTimeMillis(), buf)
+        if (n == 0) return
+        repeat(3) {
+            runCatching { sock.send(DatagramPacket(buf, n, addr)) }
+            Thread.sleep(10)
+        }
+        Log.i(TAG, "v2 BYE sent (3x)")
+    }
+
+    /* ============================================================
+     *  PROTOCOL V2 LOOP (Noise IK + ChaCha20-Poly1305, tickets)
+     * ============================================================ */
+    private fun vpnMainLoopV2(session: Any) {
+        Log.i(TAG, "VPN v2 loop starting")
+        var socket: DatagramSocket? = null
+        var pipe: Array<FileDescriptor>? = null
+        var failureMsg: String? = null
+
+        try {
+            val store = AccessStore(this)
+            val bundle = store.bundle() ?: throw IllegalStateException("no VPN access imported")
+            val node = bundle.nodes.firstOrNull { it.id == nodeId } ?: bundle.nodes.first()
+            val ticket = bundle.ticketInfo
+            if (ticket.isExpired()) {
+                throw IllegalStateException("your access expired on ${AccessStore.formatDate(ticket.exp)}")
+            }
+            val deviceKey = store.deviceKey()
+            val client = V2Client(deviceKey, node.pub, ticket = bundle.ticket)
+            deviceKey.fill(0)
+
+            val sock = DatagramSocket()
+            socket = sock
+            protect(sock)
+            val serverAddr = InetSocketAddress(InetAddress.getByName(node.host), node.port) // DNS names allowed
+            socketLock.withLock {
+                if (activeSession.get() !== session) return
+                globalSocket = sock
+                serverAddress = serverAddr
+                v2Client = client
+            }
+            currentSessionId = 0 // v1 only
+            currentMtu = V2_MTU
+            currentClampMss = V2_CLAMP_MSS
+
+            performHandshakeV2(sock, serverAddr, client)
+            val assignedIp = V2Wire.ipToString(client.tunIp())
+            assignedIpStr = assignedIp
+            // /32: the server's pool prefix is not sent; every route goes through the tunnel anyway
+            val tun = createTun(assignedIp, 32, V2_MTU)
+            val wakePipe = Os.pipe()
+            pipe = wakePipe
+
+            socketLock.withLock {
+                if (activeSession.get() !== session) {
+                    tun.close()
+                    return
+                }
+                tunInterface = tun
+                wakeWriteFd = wakePipe[1]
+                running = true
+                isActive = true
+                activeIpStr = assignedIp
+                activeSessionId = client.handshakeId()
+                activeMtu = V2_MTU
+                activeMss = currentClampMss
+                activeSecurity = "Noise IK · ${SessionLocks.name(client.cipherId())}"
+                activeServerName = node.id
+            }
+            broadcastVpnStatus(assignedIp)
+
+            val tunIn = FileInputStream(tun.fileDescriptor)
+            val tunOut = FileOutputStream(tun.fileDescriptor)
+            sock.sendBufferSize = 1024 * 1024
+            sock.receiveBufferSize = 1024 * 1024
+            val lastRecvMs = AtomicLong(System.currentTimeMillis()) // last authenticated packet
+
+            fun send(buf: ByteArray, n: Int) {
+                if (n <= 0) return
+                socketLock.withLock { if (running) sock.send(DatagramPacket(buf, n, serverAddr)) }
+            }
+
+            // --- UPLINK: TUN -> seal -> UDP ---
+            val uplinkThread = Thread {
+                val ipBuf = ByteArray(V2_MTU + 64)
+                val out = ByteArray(V2_MTU + 64 + V2Wire.TRANSPORT_MIN_LEN)
+                val tunPoll = StructPollfd().apply { this.fd = tun.fileDescriptor; events = OsConstants.POLLIN.toShort() }
+                val wakePoll = StructPollfd().apply { this.fd = wakePipe[0]; events = OsConstants.POLLIN.toShort() }
+                val pollFds = arrayOf(tunPoll, wakePoll)
+                try {
+                    while (running) {
+                        tunPoll.revents = 0
+                        wakePoll.revents = 0
+                        try {
+                            Os.poll(pollFds, -1)
+                        } catch (e: ErrnoException) {
+                            if (e.errno == OsConstants.EINTR) continue
+                            throw e
+                        }
+                        if (wakePoll.revents.toInt() != 0) break
+                        if ((tunPoll.revents.toInt() and OsConstants.POLLIN) == 0) break
+                        val len = tunIn.read(ipBuf, 0, V2_MTU)
+                        if (len > 0) {
+                            clampTcpMssIncremental(ipBuf, len, 0, currentClampMss)
+                            send(out, client.sealData(ipBuf, 0, len, System.currentTimeMillis(), out))
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (running) Log.e(TAG, "v2 uplink failure: ${e.message}")
+                }
+            }
+
+            // --- DOWNLINK: UDP -> open -> TUN (also rekey responses and server BYE) ---
+            val downlinkThread = Thread {
+                val recvBuf = ByteArray(2048)
+                val plain = ByteArray(2048)
+                val ack = ByteArray(V2Wire.ACK_LEN)
+                try {
+                    while (running) {
+                        val pkt = DatagramPacket(recvBuf, recvBuf.size)
+                        sock.receive(pkt)
+                        when (client.receive(recvBuf, pkt.length, System.currentTimeMillis(), ack, plain)) {
+                            V2Client.Event.DATA -> {
+                                lastRecvMs.set(System.currentTimeMillis())
+                                val n = client.lengths[1]
+                                handleInboundPacket(plain, n, 0)
+                                tunOut.write(plain, 0, n)
+                            }
+                            V2Client.Event.KEEPALIVE -> lastRecvMs.set(System.currentTimeMillis())
+                            V2Client.Event.ESTABLISHED -> { // rekey completed
+                                lastRecvMs.set(System.currentTimeMillis())
+                                send(ack, client.lengths[0])
+                                activeSessionId = client.handshakeId()
+                                Log.i(TAG, "v2 rekeyed: hsid=${client.handshakeId()}")
+                                broadcastVpnStatus(assignedIp)
+                            }
+                            V2Client.Event.BYE -> {
+                                Log.i(TAG, "v2 server ended the session")
+                                Thread { disconnectVpn(session, "Disconnected: the server ended the session (access revoked or server restarted)") }.start()
+                                break
+                            }
+                            V2Client.Event.NONE -> {}
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (running) Log.e(TAG, "v2 downlink failure: ${e.message}")
+                }
+            }
+
+            // --- TIMER: keepalive, rekey, reject-after, silence ---
+            val timerThread = Thread {
+                val buf = ByteArray(V2Wire.TRANSPORT_MIN_LEN)
+                try {
+                    while (running) {
+                        Thread.sleep(1000)
+                        if (!running) break
+                        val now = System.currentTimeMillis()
+                        val age = client.sessionAgeMs(now)
+                        if (age >= V2_REJECT_AFTER_MS) {
+                            Thread { disconnectVpn(session, "Disconnected: the session could not be renewed (is your access still valid?)") }.start()
+                            break
+                        }
+                        if (age >= V2_REKEY_AFTER_MS &&
+                            (!client.handshakeInFlight() || now - client.handshakeStartedMs() >= V2_RETRY_MS)) {
+                            val init = client.startHandshake(now)
+                            send(init, init.size)
+                            Log.i(TAG, "v2 rekey: HS_INIT sent (session age ${age / 1000} s)")
+                        }
+                        val ka = (client.keepaliveSeconds().takeIf { it > 0 } ?: 15) * 1000L
+                        if (now - client.lastSendMs() >= ka) send(buf, client.sealKeepalive(now, buf))
+                        if (now - lastRecvMs.get() > 3 * ka) {
+                            Thread { disconnectVpn(session, "Disconnected: no reply from the server for ${3 * ka / 1000} s") }.start()
+                            break
+                        }
+                    }
+                } catch (e: InterruptedException) {
+                    // shutdown
+                } catch (e: Exception) {
+                    if (running) Log.e(TAG, "v2 timer failure: ${e.message}")
+                }
+            }
+
+            uplinkThread.start()
+            downlinkThread.start()
+            timerThread.start()
+            uplinkThread.join()
+            downlinkThread.join()
+            timerThread.interrupt()
+            timerThread.join(2000)
+        } catch (e: Exception) {
+            if (activeSession.get() === session) {
+                Log.e(TAG, "VPN v2 loop error", e)
+                if (!running) failureMsg = "Connection failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        } finally {
+            disconnectVpn(session, failureMsg ?: "VPN Disconnected")
+            socket?.close()
+            pipe?.let { p ->
+                socketLock.withLock { if (wakeWriteFd === p[1]) wakeWriteFd = null }
+                p.forEach { runCatching { Os.close(it) } }
+            }
+        }
+    }
+
+    /** HS_INIT -> HS_RESP -> ACK with 4 attempts (new msg1 each time, design 02 §4). */
+    private fun performHandshakeV2(sock: DatagramSocket, server: InetSocketAddress, client: V2Client) {
+        val recvBuf = ByteArray(2048)
+        val plain = ByteArray(2048)
+        val ack = ByteArray(V2Wire.ACK_LEN)
+        try {
+            for (attempt in 1..HANDSHAKE_ATTEMPTS) {
+                val init = client.startHandshake(System.currentTimeMillis())
+                sock.send(DatagramPacket(init, init.size, server))
+                Log.i(TAG, "v2 HS_INIT sent (attempt $attempt/$HANDSHAKE_ATTEMPTS)")
+                val deadline = System.currentTimeMillis() + V2_RETRY_MS + NoiseCrypto.random.nextInt(334)
+                while (true) {
+                    val left = deadline - System.currentTimeMillis()
+                    if (left <= 0) break
+                    sock.soTimeout = left.toInt()
+                    val pkt = DatagramPacket(recvBuf, recvBuf.size)
+                    try {
+                        sock.receive(pkt)
+                    } catch (e: SocketTimeoutException) {
+                        break
+                    }
+                    if (client.receive(recvBuf, pkt.length, System.currentTimeMillis(), ack, plain) ==
+                        V2Client.Event.ESTABLISHED) {
+                        sock.send(DatagramPacket(ack, client.lengths[0], server))
+                        Log.i(TAG, "v2 established: hsid=${client.handshakeId()} ip=${V2Wire.ipToString(client.tunIp())}")
+                        return
+                    }
+                }
+            }
+        } finally {
+            runCatching { sock.soTimeout = 0 }
+        }
+        // A v2 node answers only clients it accepts, so silence can also mean "not authorized"
+        throw SocketTimeoutException("no answer from the server (access not accepted, or server unreachable)")
     }
 
     private fun intToIp(ip: Int): String =

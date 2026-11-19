@@ -6,6 +6,8 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
+    <!-- VPN access: device key wrapped by a device-bound Keystore key; useless elsewhere -->
+    <exclude domain="sharedpref" path="vpn_access.xml" />
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

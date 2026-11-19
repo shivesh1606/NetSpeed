@@ -1,5 +1,6 @@
 package org.thinkSlow.netspeedv3
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -22,6 +23,9 @@ class MainActivity : AppCompatActivity() {
         nav = findViewById(R.id.bottom_nav)
         nav.selectedItemId = R.id.menu_vpn
 
+        // Opened from a cppvpn://import link (only once: not again after a rotation)
+        if (savedInstanceState == null) handleAccessLink(intent)
+
         nav.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.menu_vpn -> {
@@ -42,6 +46,27 @@ class MainActivity : AppCompatActivity() {
                 }
                 else -> false
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleAccessLink(intent)
+    }
+
+    /**
+     * cppvpn://import?b=... from a browser, chat or QR app. Never imports silently: the dialog
+     * shows what the link grants first. Afterwards the VPN tab is reloaded with the new access.
+     */
+    private fun handleAccessLink(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (intent.action != Intent.ACTION_VIEW || uri.scheme != "cppvpn" || uri.host != "import") return
+        intent.data = null // consumed
+        AccessImportUi.confirmAndImport(this, uri.toString()) {
+            // Selecting the tab that is already selected does not reload it, so replace explicitly
+            if (nav.selectedItemId == R.id.menu_vpn) replaceFragment(VPNFragment())
+            else nav.selectedItemId = R.id.menu_vpn
         }
     }
 

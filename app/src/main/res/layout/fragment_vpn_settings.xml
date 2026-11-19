@@ -194,7 +194,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="1dp"
-                            android:text="@string/protocol_desc"
+                            android:id="@+id/tv_protocol_desc"
+                            android:text="@string/protocol_desc_v2"
                             android:textSize="11sp"
                             android:textColor="@color/textTertiary" />
                     </LinearLayout>
@@ -300,6 +301,58 @@
 
                     <com.google.android.material.switchmaterial.SwitchMaterial
                         android:id="@+id/switch_auto_connect"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="0.5dp"
+                    android:layout_marginHorizontal="14dp"
+                    android:background="@color/borderLight" />
+
+                <!-- Legacy v1 (developer option: typed IP, no encryption) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="14dp">
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_network"
+                        app:tint="@color/accentBlue"
+                        android:contentDescription="Legacy server" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="12dp"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/legacy_v1"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:textColor="?colorOnSurface" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="1dp"
+                            android:text="@string/legacy_v1_desc"
+                            android:textSize="11sp"
+                            android:textColor="@color/textTertiary" />
+                    </LinearLayout>
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/switch_legacy_v1"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
                 </LinearLayout>

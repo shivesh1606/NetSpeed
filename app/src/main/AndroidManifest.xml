@@ -32,14 +32,30 @@
         android:theme="@style/Theme.NetSpeedv3">
 
         <!-- Main Screen -->
+        <!-- singleTask: an access link opened elsewhere reaches the running app (onNewIntent) -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- VPN access links from vpnctl: cppvpn://import?b=<bundle> -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="cppvpn" android:host="import"/>
+            </intent-filter>
         </activity>
+
+        <!-- QR scanner (zxing-android-embedded): follow the phone's orientation instead of landscape -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullSensor"
+            tools:replace="screenOrientation" />
 
         <!-- Network Speed Foreground Service -->
         <service

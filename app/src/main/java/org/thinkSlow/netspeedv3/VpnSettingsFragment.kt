@@ -33,6 +33,11 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
         const val KEY_EXCLUDED_APPS = "excluded_apps"
         const val KEY_KILL_SWITCH = "kill_switch"
         const val KEY_AUTO_CONNECT = "auto_connect"
+        /** Developer option: typed IP + protocol v1 (XOR, no encryption) instead of the imported access */
+        const val KEY_LEGACY_V1 = "legacy_v1"
+
+        fun isLegacyV1(context: Context): Boolean =
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_LEGACY_V1, false)
     }
 
     private lateinit var prefs: SharedPreferences
@@ -42,12 +47,15 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
     private lateinit var btnAddApp: MaterialButton
     private lateinit var switchKillSwitch: SwitchMaterial
     private lateinit var switchAutoConnect: SwitchMaterial
+    private lateinit var switchLegacyV1: SwitchMaterial
+    private lateinit var tvProtocolDesc: TextView
     private lateinit var tvVpnWarning: TextView
 
     // VPN state listener
     private val vpnStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             updateSplitTunnelingUI()
+            updateProtocolUI()
         }
     }
 
@@ -62,6 +70,8 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
         btnAddApp = view.findViewById(R.id.btn_add_app)
         switchKillSwitch = view.findViewById(R.id.switch_kill_switch)
         switchAutoConnect = view.findViewById(R.id.switch_auto_connect)
+        switchLegacyV1 = view.findViewById(R.id.switch_legacy_v1)
+        tvProtocolDesc = view.findViewById(R.id.tv_protocol_desc)
 
         // Info banner for VPN connection state
         tvVpnWarning = TextView(requireContext()).apply {
@@ -88,6 +98,7 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
         switchSplitTunnel.isChecked = prefs.getBoolean(KEY_SPLIT_TUNNEL_ENABLED, false)
         switchKillSwitch.isChecked = prefs.getBoolean(KEY_KILL_SWITCH, false)
         switchAutoConnect.isChecked = prefs.getBoolean(KEY_AUTO_CONNECT, false)
+        switchLegacyV1.isChecked = prefs.getBoolean(KEY_LEGACY_V1, false)
 
         // Show/hide split tunnel content
         splitTunnelContent.visibility =
@@ -106,6 +117,11 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
             prefs.edit().putBoolean(KEY_AUTO_CONNECT, checked).apply()
         }
 
+        switchLegacyV1.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(KEY_LEGACY_V1, checked).apply()
+            updateProtocolUI()
+        }
+
         btnAddApp.setOnClickListener {
             // Check if VPN is connected
             if (MyVpnService.isActive) {
@@ -117,12 +133,14 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
 
         // Update UI based on VPN state
         updateSplitTunnelingUI()
+        updateProtocolUI()
         refreshExcludedApps()
     }
 
     override fun onResume() {
         super.onResume()
         updateSplitTunnelingUI()
+        updateProtocolUI()
 
         // Listen for VPN status changes
         val filter = IntentFilter("vpn_status_update")
@@ -159,6 +177,14 @@ class VpnSettingsFragment : Fragment(R.layout.fragment_vpn_settings) {
 
         // Refresh excluded apps list to update remove buttons
         refreshExcludedApps()
+    }
+
+    /** Protocol row text, and the legacy switch locked while a tunnel is up (applies on next connect). */
+    private fun updateProtocolUI() {
+        tvProtocolDesc.setText(if (switchLegacyV1.isChecked) R.string.protocol_desc_v1 else R.string.protocol_desc_v2)
+        val vpnIsActive = MyVpnService.isActive
+        switchLegacyV1.isEnabled = !vpnIsActive
+        switchLegacyV1.alpha = if (vpnIsActive) 0.5f else 1f
     }
 
     private fun showVpnConnectedDialog() {
